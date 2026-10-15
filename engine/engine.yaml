@@ -61,6 +61,43 @@ vcs_actions:
   merge: {outward: false}
   push_base: {outward: true}
 
+# Where a person's data lives. The plugin ships none of it: a profile, the
+# ledger and the trust record never go in the plugin root, and an installed
+# copy (a plugins cache directory) is never edited, since an update replaces
+# it. When the repo being worked on is the plugin's own source checkout, its
+# files are repo files like any other.
+# scripts/config.rb resolves the same paths for the scripts.
+locations:
+  profile: >
+    <repo>/.claude/dev-engine.yaml, committed in the repo it describes. It
+    holds one profile: `name` (kebab-case, the repo's name in the ledger),
+    `description`, `base_branch`, `forge`, `commands` (every key in
+    `commands` above, null where it does not apply), and optionally
+    `commit_hook` and `workspace`. The file's presence is what sets the repo
+    up; there is no match rule.
+  stack_skills: >
+    <repo>/.claude/skills/<skill>/SKILL.md, in the repo the skill describes.
+  ledger: >
+    The file named by the DEV_ENGINE_LEDGER environment variable, else
+    ~/.config/dev-engine/ledger.yaml. It is optional: a single repo needs
+    none. `init` creates it when missing and adds the repo to it.
+  ledger_env: DEV_ENGINE_LEDGER
+  trust: >
+    ~/.config/dev-engine/trusted.yaml, a user-level map from a repo's absolute
+    path to the SHA-256 of its profile file's contents. A repo's profile holds
+    shell commands, so it is run only when the person approved it: a profile
+    that is absent from the map, or whose file has changed since, is
+    untrusted. scripts/config.rb owns the path (`trust_path`, `trusted?`,
+    `trust!`; `ruby scripts/config.rb trust <repo>` records one).
+  ledger_schema:
+    surveyed: The date the ledger was last checked against the source, as "YYYY-MM-DD".
+    repos: "[{id: repo:<profile name>, path_hint, description}]; path_hint is where the clone lives on this machine."
+    packages: "[{id: package:<name>, repo: repo:<profile name>, path, description}]"
+    environments: "[{id: env:<name>, description, url}]"
+    edges: "[{from: <id>, to: <id>, kind, evidence}]"
+    edge_kinds: [depends_on, calls, publishes_to, deploys_to, shares_schema_with]
+    evidence: The path that shows the edge, as <profile name>:<path>.
+
 # ---------------------------------------------------------------------------
 # Semantics. Every run obeys these.
 # ---------------------------------------------------------------------------
@@ -127,9 +164,10 @@ rules:
     outside the allowlist in scripts/guard-agents.sh. A denial is final: do
     not retry the same action from the main session on the agent's behalf.
   profiles: >
-    Workflows name command keys, never commands. Resolve the profile for the
-    repo once at the start of the run and take every command, the base branch
-    and the forge from it. If no profile matches, stop and say so.
+    Workflows name command keys, never commands. Read the repo's profile from
+    `locations.profile` once at the start of the run and take every command,
+    the base branch and the forge from it. If the repo has no profile file,
+    stop and say that `init` sets one up.
   artifacts: >
     Artifacts are written to .dev-engine/specs/<run-id>/<template>.md in the
     repo. They stay within the template's `max_lines` and hold no code: no
@@ -158,10 +196,15 @@ rules:
     a workspace, not in the clone the session started in.
   multi_repo: >
     A run spans the repos its plan or bug spec lists under `Repos`, in the
-    order given there: a repo before the repos that depend on it. Each must
-    have a profile. `branch`, `commit`, `merge` and `push_base` act on every
-    listed repo in that order, and a check step runs in each with that
-    repo's own commands. One gate covers the whole list, so show every repo
+    order given there: a repo before the repos that depend on it. Find each
+    one's clone by its `path_hint` in the ledger (`locations.ledger`); each
+    must have its own profile file. Once `Repos` is fixed, and before any
+    `branch`, `check` or `commit` step in a repo other than the run's own,
+    check that repo's profile for trust (`locations.trust`) as at the start
+    of a run: show its commands and workspace strings and ask, and run
+    nothing from it until it is trusted. `branch`, `commit`, `merge` and
+    `push_base` act on every listed repo in that order, and a check step
+    runs in each with that repo's own commands. One gate covers the whole list, so show every repo
     and commit when asking. Record the list in the log under `repos`, and in
     each repo other than the run's own write a pointer at
     .dev-engine/runs/<run-id>.yaml holding `run` and `primary`, the path of
@@ -201,6 +244,9 @@ run_log:
     Read the newest log whose status is running or waiting, or the one named.
     Confirm the repo, branch and artifact paths still exist and that the
     working tree matches what the log expects; if not, say what differs and
-    ask. Continue at the first step that is not done or skipped. A gate
+    ask. Re-read the profile of the run's repo and of each repo under
+    `repos` and check its trust as at the start of a run; a profile changed
+    since then is shown and asked about again before anything from it runs.
+    Continue at the first step that is not done or skipped. A gate
     approved in an earlier session is asked again if any outward step naming
     it has not yet run.

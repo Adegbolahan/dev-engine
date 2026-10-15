@@ -1,5 +1,5 @@
 {
-  "description": "Keeps dev-engine's read-only agents read-only, holds pushes and merge requests behind a run's gates, and adds a start-of-session note in repos that match a profile.",
+  "description": "Keeps dev-engine's read-only agents read-only, holds pushes and merge requests behind a run's gates, and adds a start-of-session note in repos with a .claude/dev-engine.yaml profile.",
   "hooks": {
     "PreToolUse": [
       {

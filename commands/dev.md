@@ -9,76 +9,117 @@ engine spec, a profile and a workflow, and you follow them exactly.
 Arguments: `$ARGUMENTS`
 
 The plugin root is `${CLAUDE_PLUGIN_ROOT}`. Paths below are relative to it
-unless they start with `.dev-engine/`, which is in the repo being worked on.
+unless they start with `.dev-engine/` or `.claude/`, which are in the repo
+being worked on. Never put a profile, ledger or trust record in the plugin
+root, and never edit an installed copy (a plugins cache directory): an update
+replaces it. When the repo being worked on is the plugin's own source
+checkout, its files are repo files like any other.
+
+The repo's profile is `.claude/dev-engine.yaml` in the repo. The user ledger
+is the file named by `DEV_ENGINE_LEDGER`, else
+`~/.config/dev-engine/ledger.yaml`. The trust record is
+`~/.config/dev-engine/trusted.yaml`. `locations` in `engine/engine.yaml`
+gives the schema of all three.
+
+A repo's profile holds shell commands, so it is not run until the person has
+trusted it (see "Start a run"). Check with
+`ruby ${CLAUDE_PLUGIN_ROOT}/scripts/config.rb trusted <repo>` (exit 0 means
+trusted); record with `ruby ${CLAUDE_PLUGIN_ROOT}/scripts/config.rb trust <repo>`.
 
 ## Pick the mode from the first argument
 
 - **No argument, or `list`**: read every `workflows/*.yaml` and print a table
-  of name, arguments and description. Then name the profile the current repo
-  matches, or say that none does. Stop.
+  of name, arguments and description. Then read the current repo's
+  `.claude/dev-engine.yaml` and name its profile, or say the repo has none
+  and that `init` sets one up. Stop.
 - **`init`**: follow "Set up a repo" below, then stop.
 - **`doctor`**: run `bash ${CLAUDE_PLUGIN_ROOT}/scripts/doctor.sh` and
   `ruby ${CLAUDE_PLUGIN_ROOT}/scripts/validate.rb`, show both outputs as they
   are, and stop. Do not fix anything unless asked.
 - **`drift [--fetch]`**: run `ruby ${CLAUDE_PLUGIN_ROOT}/scripts/drift.rb`, passing
   `--fetch` if it was given, and show the output as it is. It compares the
-  profiles, the ledger and the paths the skills cite with the repos on this
+  user ledger, each ledger repo's profile file and the paths cited by the
+  plugin's skills and each repo's `.claude/skills/` with the repos on this
   machine. Say plainly that prose rules and versions are not checked. Do not
   fix anything unless asked. Stop.
-- **`resume [run-id]`**: follow `run_log.resume` in `engine/engine.yaml`, then
-  continue from "Walk the steps".
+- **`resume [run-id]`**: follow `run_log.resume` in `engine/engine.yaml`.
+  Before walking any step, re-read the profile of the run's repo and of each
+  repo in the log's `repos`, and check each one's trust as "Start a run"
+  step 2 does: a profile changed since the run started is asked about again.
+  Then continue from "Walk the steps".
 - **Anything else**: it is a workflow name. The rest of the arguments are the
   workflow's `args`. If no `workflows/<name>.yaml` exists, list the workflows
   and stop.
 
 ## Set up a repo
 
-`init` adds the current repo to this plugin: one profile and one ledger
-entry. It starts no run and changes nothing in the repo itself.
+`init` sets up the current repo: its profile file and its entry in the user
+ledger. It starts no run, writes nothing else in the repo, and writes
+nothing under the plugin root.
 
-1. Confirm you are in a git repo; if not, say so and stop. Read
-   `engine/profiles.yaml`. If a profile already matches this repo, show it
-   and ask whether to update it or leave it; do not add a second.
-2. Check where the plugin lives. If `${CLAUDE_PLUGIN_ROOT}` is inside a
-   plugins cache directory, it is an installed copy and edits there are lost
-   on the next update: say so and ask for the path of the plugin's source.
-   Write there instead, and tell the person how to refresh the install.
-3. Gather the facts from the repo, not from memory:
-   - **name**: the repo's name in kebab-case. Ask if it is already taken.
-   - **match**: a `remote` regex built from `git remote get-url origin` that
-     fits both its SSH and HTTPS forms. With no remote, use `files` that only
-     this repo would have, and say that the match is weaker.
+1. Confirm you are in a git repo; if not, say so and stop. If the repo is
+   the plugin root (`${CLAUDE_PLUGIN_ROOT}`), say that the plugin's own
+   profile is maintained by hand in its source, and stop. If the repo already
+   has `.claude/dev-engine.yaml`, show it and ask whether to update it or
+   keep it.
+2. Gather the facts from the repo, not from memory. When a profile exists,
+   take **name** and **description** from it; do not derive them again.
+   - **name**: the repo's name in kebab-case. If the user ledger already has
+     `repo:<name>` with a `path_hint` that is not this repo, ask for another.
+   - **description**: what the repo is, in one line.
    - **base_branch**: the remote's default branch, else the current one.
    - **forge**: `github` or `gitlab` from the remote host, else `none`.
    - **commands**: for each key in `engine.yaml` `commands`, find what this
      repo uses by reading its manifest, task runner, CI config, README and
      CLAUDE.md. Prefer what CI runs.
-4. Run each command you found, as written, and keep the result. A key the
+     If the person keeps the existing profile, the facts are what it holds and
+     steps 3 and 4 cover only the ledger entry and, if they want it, its commands.
+     If an existing profile is not trusted, show its `commands` and `workspace`
+     strings exactly as written and ask with AskUserQuestion whether to run
+     them. If the person declines, run none of them and mark each "not run".
+3. Run each command you found, as written, and keep the result. A key the
    repo has no command for is null. Do not install dependencies, change
    files or fix failures to get a pass. For `run`, start it only if you can
    confirm it came up and stop it cleanly; otherwise leave it for the person
    to confirm.
-5. Show the proposed profile and the ledger entry, with each command marked
-   passed, failed (with its output) or not run. Ask with AskUserQuestion:
-   approve, revise or abort. A failing or unrun command goes in only if the
-   person says to keep it.
-6. On approval, add the profile to `engine/profiles.yaml` and a
-   `repo:<name>` entry (with `path_hint` and `description`) to
-   `ledger/ledger.yaml`. Leave every other entry as it is. Add no edges:
-   those are added as they are confirmed against source.
-7. Run `ruby scripts/validate.rb`. If it fails, show the output and fix only
-   what this change broke.
-8. Report what was written and where, which commands were not confirmed, and
-   that stack skills and ledger edges for this repo are still to be written.
+4. Show the proposed profile (or the existing one, if kept), the ledger path
+   and the ledger entry, with each command marked passed, failed (with its
+   output) or not run. Ask with AskUserQuestion: approve, revise or abort. A
+   failing or unrun command goes in only if the person says to keep it.
+5. On approval, write the profile to `.claude/dev-engine.yaml` in the repo,
+   as `locations.profile` describes, unless the person kept the existing one.
+   Whether the profile was written or kept, add or update the `repo:<name>`
+   entry (with `path_hint` set to this clone and `description`) in the user
+   ledger; this was shown in step 4 and approved with it. If the ledger does
+   not exist, create it and its directory first, with today's date as
+   `surveyed` and empty `packages`, `environments` and `edges`. Leave every
+   other entry as it is. Add no edges: those are added as they are confirmed
+   against source. Do not record trust yet.
+6. From the repo, run `ruby ${CLAUDE_PLUGIN_ROOT}/scripts/validate.rb`. If it
+   fails, show the output and fix only what this change broke, in the two
+   files `init` wrote. If a fix changes the profile, show the change and get
+   it approved. Once validate passes, and only if the person approved the
+   profile's commands (the profile written, or the kept one shown with its
+   commands), record its digest as trusted with the `trust` command above.
+7. Report what was written and where, which commands were not confirmed, and
+   what is still to do: commit `.claude/dev-engine.yaml` so every clone of
+   the repo gets it; write the repo's stack skills in its `.claude/skills/`;
+   add ledger edges as they are confirmed against source.
 
 ## Start a run
 
 1. Read `engine/engine.yaml` in full. Its `rules`, `statuses`, `failure` and
    `run_log` sections bind this run.
-2. Read `engine/profiles.yaml` and find the profile whose `match` holds for
-   the current repo: test `remote` against `git remote get-url origin` and
-   check each of `files` exists at the repo root. If none matches, say so,
-   say that `init` sets one up, and stop. If more than one matches, ask.
+2. Read the current repo's `.claude/dev-engine.yaml`; that is the run's
+   profile. If the repo has none, say so, say that `init` sets one up, and
+   stop. Then check its trust. If the profile is not trusted (never
+   approved, or its file changed since), show its `commands` and `workspace`
+   strings exactly as written and ask with AskUserQuestion: trust and
+   continue, or abort. Run nothing from the profile before it is trusted. On
+   trust, record its digest with the `trust` command above, then continue.
+   On abort, stop. Other repos of a run are known only once the plan or bug
+   spec lists them under `Repos`; `rules.multi_repo` says when each gets the
+   same check.
 3. Read `workflows/<name>.yaml`. If the workflow needs `args` and none were
    given, ask for them.
 4. Create the run log at `.dev-engine/runs/<run-id>.yaml` as the engine spec
@@ -151,5 +192,5 @@ anything left open. Report failures with their output; do not round them up.
   agent the workflow does not declare, stop and say what is missing.
 - Never answer a gate yourself, and never treat an earlier approval as
   covering something new.
-- The ledger at `ledger/ledger.yaml` and the guides in `docs/how-to/` are
+- The user ledger and the how-to guides in the repo being worked on are
   maps. Confirm against the source before acting on them.

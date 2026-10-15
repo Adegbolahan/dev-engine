@@ -1,0 +1,14 @@
+# This repo's dev-engine profile. Its presence tells the plugin that /dev is
+# set up here. Command keys are the ones in engine/engine.yaml `commands`;
+# null means "does not apply here".
+name: dev-engine
+description: This plugin. Lets the engine run its own workflows on itself.
+base_branch: main
+forge: none
+commands:
+  typecheck: ruby -c scripts/validate.rb && ruby -c scripts/drift.rb && ruby -c scripts/config.rb
+  policy: null
+  lint: bash -n scripts/guard-agents.sh && bash -n scripts/guard-agents.test.sh && bash -n scripts/guard-gates.sh && bash -n scripts/guard-gates.test.sh && bash -n scripts/session-start.sh && bash -n scripts/doctor.sh && bash -n scripts/config.test.sh
+  test: bash scripts/guard-agents.test.sh && bash scripts/guard-gates.test.sh && bash scripts/config.test.sh
+  build: ruby scripts/validate.rb
+  run: null

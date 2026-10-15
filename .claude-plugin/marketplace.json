@@ -1,6 +1,9 @@
 {
-  "name": "dev-engine-local",
+  "name": "dev-engine",
   "owner": { "name": "tabayomi" },
+  "metadata": {
+    "description": "dev-engine: gated, repeatable development workflows for Claude Code, run with one /dev command."
+  },
   "plugins": [
     {
       "name": "dev-engine",
