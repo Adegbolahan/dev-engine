@@ -2,7 +2,7 @@
 # frozen_string_literal: true
 
 # Compares what the user ledger and each repo's profile say with the repos on
-# this machine, and checks the paths the skills cite. Prints one line per
+# this machine, and checks the paths the repos' stack skills cite. Prints one line per
 # check and exits 1 if anything has drifted. It reads only; it never fetches
 # unless asked and never changes a file.
 #
@@ -46,17 +46,25 @@ rescue JSON::ParserError
   nil
 end
 
+ENGINE = YAML.safe_load(File.read(File.join(ROOT, 'engine/engine.yaml')))
+
 # A repo's profile; nil if it has none, false if it is broken (already drift).
+# Other repos' profiles are not checked by validate.rb, so check their shape
+# here before anything below reads them.
 def profile_in(name, dir)
   prof = DevEngineConfig.load(DevEngineConfig.profile_path(dir))
-  return prof if prof.is_a?(Hash)
+  problems = DevEngineConfig.profile_errors(prof, ENGINE['commands'] || [], ENGINE['forges'] || [])
+  return prof if problems.empty?
 
-  drift("#{name}: #{DevEngineConfig::PROFILE_REL} is not a mapping")
+  problems.each { |p| drift("#{name}: #{DevEngineConfig::PROFILE_REL}: #{p}") }
   false
 rescue Errno::ENOENT
   nil
 rescue Psych::Exception => e
   drift("#{name}: #{DevEngineConfig::PROFILE_REL} is not valid YAML: #{e.message}")
+  false
+rescue SystemCallError => e
+  drift("#{name}: #{DevEngineConfig::PROFILE_REL} cannot be read: #{e.message}")
   false
 end
 
@@ -65,8 +73,12 @@ ledger = begin
   DevEngineConfig.load(ledger_path) || {}
 rescue Errno::ENOENT
   nil
-rescue Psych::Exception => e
-  puts "  DRIFT  the ledger at #{ledger_path} is not valid YAML: #{e.message}"
+rescue Psych::Exception, SystemCallError => e
+  puts "  DRIFT  the ledger at #{ledger_path} cannot be read: #{e.message}"
+  exit 1
+end
+unless ledger.nil? || ledger.is_a?(Hash)
+  puts "  DRIFT  the ledger at #{ledger_path} is not a mapping; run validate.rb for details"
   exit 1
 end
 
@@ -207,8 +219,10 @@ search_roots = paths.values + [ROOT]
 cited = Hash.new { |h, k| h[k] = [] }
 # A skill may cite its own bundled files (references/, scripts/) relative to its directory.
 cited_from = Hash.new { |h, k| h[k] = [] }
-# The plugin's skills and workflows, and each repo's own stack skills.
-sources = Dir.glob(File.join(ROOT, 'skills/*/SKILL.md')) + Dir.glob(File.join(ROOT, 'workflows/*.yaml'))
+# Each repo's own stack skills, which describe that repo's files, and the
+# workflows. The plugin's skills are generic: a path they cite is a
+# convention for any repo, not a claim that some repo has it.
+sources = Dir.glob(File.join(ROOT, 'workflows/*.yaml'))
 paths.each_value { |dir| sources += Dir.glob(File.join(dir, '.claude/skills/*/SKILL.md')) }
 sources.uniq.sort.each do |file|
   workflow = file.end_with?('.yaml')

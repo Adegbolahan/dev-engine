@@ -38,6 +38,9 @@ def load_user_file(abs)
 rescue Psych::Exception => e
   err(shown(abs), "invalid YAML: #{e.message}")
   nil
+rescue SystemCallError => e
+  err(shown(abs), "cannot be read: #{e.message}")
+  nil
 end
 
 def load_yaml(rel)

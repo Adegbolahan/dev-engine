@@ -47,7 +47,7 @@ Inside a repo that has a profile:
 | `/dev ui-design <what to design>` | Research the app and comparable apps, discovery questions, design brief, build or mock, UI review, merge request.                          |
 | `/dev resume [run-id]`            | Continues an unfinished run from its log.                                                                                                  |
 | `/dev doctor`                     | Checks this machine and validates the plugin.                                                                                              |
-| `/dev drift [--fetch]`            | Compares your ledger, each repo's profile and the paths skills cite with the repos on this machine.                                        |
+| `/dev drift [--fetch]`            | Compares your ledger, each repo's profile and the paths its stack skills cite with the repos on this machine.                              |
 
 Every push and merge request waits behind a gate. A run keeps its log and its
 story, plan or bug spec under `.dev-engine/` in the repo it works on.
@@ -67,8 +67,15 @@ Each repo describes itself, and the plugin holds nothing about your repos:
   environments and the edges between them. It lives at
   `~/.config/dev-engine/ledger.yaml`, or wherever `DEV_ENGINE_LEDGER`
   points. A single repo needs none.
+- **Trust record**: `~/.config/dev-engine/trusted.yaml`. A profile holds
+  shell commands and arrives with any repo you clone, so `/dev` shows an
+  untrusted profile's commands and asks before running any. Approving
+  records the SHA-256 of the profile file; any later edit to it asks again.
+  Approval covers the command strings, not the scripts they call, and it is
+  enforced by the `/dev` instructions rather than by a hook. Record one by
+  hand with `ruby /path/to/dev-engine/scripts/config.rb trust <repo>`.
 
-`locations` in `engine/engine.yaml` gives the schema of both files. To set
+`locations` in `engine/engine.yaml` gives the schema of these files. To set
 up a repo:
 
 1. Run `/dev init` inside it. It works out the repo's commands, runs them,
@@ -99,8 +106,8 @@ ruby /path/to/dev-engine/scripts/validate.rb
 | `scripts/guard-gates.sh`       | The gate guard: denies pushes and merge requests while a run's gate is unapproved.                            |
 | `scripts/guard-gates.test.sh`  | The gate guard's tests; the validator runs them.                                                              |
 | `scripts/session-start.sh`     | The start-of-session note in repos that have a profile.                                                       |
-| `scripts/config.rb`            | Where a repo's profile and the user ledger live, and the schema checks for both.                              |
-| `scripts/config.test.sh`       | Tests that the session note and the validator find a repo's profile and the ledger.                           |
+| `scripts/config.rb`            | Where a repo's profile, the user ledger and the trust record live; schema checks; `trust`/`trusted` commands. |
+| `scripts/config.test.sh`       | Tests the session note, trust, the validator and drift against temp repos and ledgers.                        |
 | `scripts/validate.rb`          | Checks schema, references, hook tests and docs as one system, plus the current repo's profile and the ledger. |
 | `scripts/doctor.sh`            | Checks a machine's prerequisites and says where the ledger is.                                                |
 | `scripts/drift.rb`             | Compares the ledger, each repo's profile and cited paths with the repos on this machine.                      |

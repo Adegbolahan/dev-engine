@@ -9,6 +9,8 @@
 #   DevEngineConfig.ledger_path          $DEV_ENGINE_LEDGER or ~/.config/dev-engine/ledger.yaml
 #   DevEngineConfig.trust_path           ~/.config/dev-engine/trusted.yaml
 #   DevEngineConfig.trusted?(repo)       true if the person approved this repo's profile as it is now
+#   DevEngineConfig.trust!(repo)         record the profile as it is now as approved
+#   DevEngineConfig.profile_errors(...)  and ledger_errors(...): schema problems, as messages
 #
 # From a shell: `ruby config.rb trusted <repo>` (exit 0 if trusted) and
 # `ruby config.rb trust <repo>` (record the profile's current digest).
@@ -75,11 +77,23 @@ module DevEngineConfig
     false
   end
 
-  # Record the profile's current contents as approved.
+  # Record the profile's current contents as approved. Holds a lock while it
+  # reads and rewrites the file, and replaces it in one rename, so two
+  # sessions cannot lose each other's approvals. Raises rather than replace a
+  # trust file it cannot read, which would drop every other approval.
   def trust!(repo)
-    records = trust_records.merge(trust_key(repo) => profile_digest(profile_path(repo)))
     FileUtils.mkdir_p(File.dirname(trust_path))
-    File.write(trust_path, YAML.dump(records))
+    File.open("#{trust_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
+      lock.flock(File::LOCK_EX)
+      records = File.exist?(trust_path) ? YAML.safe_load(File.read(trust_path)) : {}
+      records ||= {}
+      raise TypeError, "#{trust_path} is not a mapping; fix or remove it" unless records.is_a?(Hash)
+
+      records[trust_key(repo)] = profile_digest(profile_path(repo))
+      tmp = "#{trust_path}.#{Process.pid}.tmp"
+      File.write(tmp, YAML.dump(records))
+      File.rename(tmp, trust_path)
+    end
   end
 
   # The top of the git repo holding dir, or nil outside one.
@@ -184,7 +198,11 @@ if $PROGRAM_NAME == __FILE__
     exit(DevEngineConfig.trusted?(repo) ? 0 : 1)
   else
     abort "no profile at #{DevEngineConfig.profile_path(repo)}" unless File.file?(DevEngineConfig.profile_path(repo))
-    DevEngineConfig.trust!(repo)
+    begin
+      DevEngineConfig.trust!(repo)
+    rescue Psych::Exception, TypeError, SystemCallError => e
+      abort "cannot record trust: #{e.message}"
+    end
     puts "trusted #{DevEngineConfig.trust_key(repo)}"
   end
 end
