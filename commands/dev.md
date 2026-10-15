@@ -22,7 +22,9 @@ is the file named by `DEV_ENGINE_LEDGER`, else
 gives the schema of all three.
 
 A repo's profile holds shell commands, so it is not run until the person has
-trusted it (see "Start a run"). Check with
+trusted it (see "Start a run"). Trust covers the profile's strings, not the
+scripts they call: say so whenever you ask, since a later commit can change
+what `npm test` or `bash scripts/x.sh` does without changing the profile. Check with
 `ruby ${CLAUDE_PLUGIN_ROOT}/scripts/config.rb trusted <repo>` (exit 0 means
 trusted); record with `ruby ${CLAUDE_PLUGIN_ROOT}/scripts/config.rb trust <repo>`.
 
@@ -38,8 +40,8 @@ trusted); record with `ruby ${CLAUDE_PLUGIN_ROOT}/scripts/config.rb trust <repo>
   are, and stop. Do not fix anything unless asked.
 - **`drift [--fetch]`**: run `ruby ${CLAUDE_PLUGIN_ROOT}/scripts/drift.rb`, passing
   `--fetch` if it was given, and show the output as it is. It compares the
-  user ledger, each ledger repo's profile file and the paths cited by the
-  plugin's skills and each repo's `.claude/skills/` with the repos on this
+  user ledger, each ledger repo's profile file and the paths cited by each
+  repo's `.claude/skills/` and by the workflows with the repos on this
   machine. Say plainly that prose rules and versions are not checked. Do not
   fix anything unless asked. Stop.
 - **`resume [run-id]`**: follow `run_log.resume` in `engine/engine.yaml`.
@@ -77,7 +79,10 @@ nothing under the plugin root.
      If an existing profile is not trusted, show its `commands` and `workspace`
      strings exactly as written and ask with AskUserQuestion whether to run
      them. If the person declines, run none of them and mark each "not run".
-3. Run each command you found, as written, and keep the result. A key the
+3. Commands found in the repo's files are repo-supplied strings too: before
+   running any, show each exactly as written and ask with AskUserQuestion
+   which to run. Run each command the person agreed to, as written, and keep
+   the result; mark the rest "not run". A key the
    repo has no command for is null. Do not install dependencies, change
    files or fix failures to get a pass. For `run`, start it only if you can
    confirm it came up and stop it cleanly; otherwise leave it for the person

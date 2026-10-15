@@ -167,6 +167,39 @@ printf 'name: [unclosed\n' >"$repo/.claude/dev-engine.yaml"
 expect 'drift with no ledger and a broken profile' 1 'is not valid YAML' "$repo" ruby "$here/drift.rb"
 write_profile
 
+# drift reads the ledger DEV_ENGINE_LEDGER names, each ledger repo's profile,
+# and the paths that repo's stack skills cite.
+write_ledger repo:temp-repo
+expect 'drift with a ledger and a matching repo' 0 'no drift found' \
+  "$plain" env DEV_ENGINE_LEDGER="$tmp/ledger.yaml" ruby "$here/drift.rb"
+mkdir -p "$repo/.claude/skills/demo"
+printf -- '---\nname: demo\ndescription: d\n---\nSee `src/not-here.py`.\n' >"$repo/.claude/skills/demo/SKILL.md"
+expect 'drift reports a path a repo skill cites that does not exist' 1 '`src/not-here.py`' \
+  "$plain" env DEV_ENGINE_LEDGER="$tmp/ledger.yaml" ruby "$here/drift.rb"
+rm -rf "$repo/.claude/skills"
+write_ledger repo:other-name
+expect 'drift reports a profile named differently from its ledger id' 1 'its profile is named `temp-repo`' \
+  "$plain" env DEV_ENGINE_LEDGER="$tmp/ledger.yaml" ruby "$here/drift.rb"
+write_ledger repo:temp-repo
+printf 'name: temp-repo\ndescription: d\nbase_branch: trunk\nforge: none\ncommands: make\n' >"$repo/.claude/dev-engine.yaml"
+expect 'drift reports a malformed ledger-repo profile instead of crashing' 1 'missing `commands`' \
+  "$plain" env DEV_ENGINE_LEDGER="$tmp/ledger.yaml" ruby "$here/drift.rb"
+write_profile
+printf -- '- not a mapping\n' >"$tmp/list-ledger.yaml"
+expect 'drift reports a ledger that is not a mapping' 1 'is not a mapping' \
+  "$plain" env DEV_ENGINE_LEDGER="$tmp/list-ledger.yaml" ruby "$here/drift.rb"
+
+# An unreadable ledger path is reported, not a crash.
+mkdir -p "$tmp/ledger-dir"
+expect 'validate with a directory as the ledger' 1 'cannot be read' \
+  "$repo" env DEV_ENGINE_LEDGER="$tmp/ledger-dir" ruby "$here/validate.rb"
+
+# trust refuses to replace a trust file it cannot read, so no approval is lost.
+printf -- '- not a mapping\n' >"$HOME/.config/dev-engine/trusted.yaml"
+expect 'trust refuses a malformed trust file' 1 'cannot record trust' "$repo" ruby "$here/config.rb" trust "$repo"
+expect 'the malformed trust file is left as it was' 0 '- not a mapping' "$repo" cat "$HOME/.config/dev-engine/trusted.yaml"
+rm -f "$HOME/.config/dev-engine/trusted.yaml"
+
 if [ "$fail" -gt 0 ]; then
   printf '%d of %d config tests failed\n' "$fail" "$count"
   exit 1

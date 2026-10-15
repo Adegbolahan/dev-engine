@@ -87,8 +87,11 @@ locations:
     path to the SHA-256 of its profile file's contents. A repo's profile holds
     shell commands, so it is run only when the person approved it: a profile
     that is absent from the map, or whose file has changed since, is
-    untrusted. scripts/config.rb owns the path (`trust_path`, `trusted?`,
-    `trust!`; `ruby scripts/config.rb trust <repo>` records one).
+    untrusted. Trust covers the profile's strings, not the scripts they
+    call: a later commit can change what an approved command does. Only the
+    instructions enforce it; no hook does. scripts/config.rb owns the path
+    (`trust_path`, `trusted?`, `trust!`; `ruby scripts/config.rb trust
+    <repo>` records one).
   ledger_schema:
     surveyed: The date the ledger was last checked against the source, as "YYYY-MM-DD".
     repos: "[{id: repo:<profile name>, path_hint, description}]; path_hint is where the clone lives on this machine."
