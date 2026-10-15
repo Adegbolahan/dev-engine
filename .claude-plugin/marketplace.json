@@ -1,0 +1,11 @@
+{
+  "name": "dev-engine-local",
+  "owner": { "name": "tabayomi" },
+  "plugins": [
+    {
+      "name": "dev-engine",
+      "source": "./",
+      "description": "Gated, repeatable development workflows written in YAML, run with one /dev command."
+    }
+  ]
+}

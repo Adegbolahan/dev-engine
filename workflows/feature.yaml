@@ -1,0 +1,89 @@
+name: feature
+description: Build a feature from a one-line request to an open merge request, with a story, a plan, checks, review and gates.
+args: "<what to build>"
+
+skills: [mr-description]
+
+agents:
+  - {name: researcher, model: sonnet}
+  - {name: implementer, model: opus}
+
+steps:
+  - id: research
+    type: instruct
+    title: Find what already exists
+    delegate: researcher
+    do: >
+      For the request given, find the code this feature would touch or reuse:
+      existing features that do something similar, the modules and tests
+      involved, and the conventions they follow. Report paths and what each
+      holds. Do not propose a design.
+
+  - id: story
+    type: artifact
+    template: story
+
+  - id: approve-story
+    type: gate
+    ask: Does this story describe what you want built? Answer any open questions it lists.
+    revise: story
+
+  - id: plan
+    type: artifact
+    template: plan
+    inputs: [story]
+
+  - id: approve-plan
+    type: gate
+    ask: Is this the plan to build? Implementation starts on approval.
+    revise: plan
+
+  - id: branch
+    type: vcs
+    action: branch
+
+  - id: implement
+    type: instruct
+    title: Build it
+    delegate: implementer
+    inputs: [story, plan]
+    do: >
+      Implement the plan in its order of work. Write the tests the plan names.
+      Reuse the existing code the plan lists instead of writing parallel
+      versions. If the plan turns out to be wrong, stop and report what you
+      found instead of working around it.
+
+  - id: checks
+    type: check
+    run: [typecheck, lint, test, build]
+    fix: true
+
+  - id: review
+    type: workflow
+    run: review
+
+  - id: commit
+    type: vcs
+    action: commit
+
+  - id: approve-publish
+    type: gate
+    ask: >
+      The work is committed locally. Approve to push the branch and open a
+      merge request against the base branch.
+    revise: implement
+
+  - id: push
+    type: vcs
+    action: push
+    outward: true
+    gate: approve-publish
+
+  - id: merge-request
+    type: vcs
+    action: merge_request
+    outward: true
+    gate: approve-publish
+    skills: [mr-description]
+    inputs: [story, plan]
+    when: The profile's forge is not none.

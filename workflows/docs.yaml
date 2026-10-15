@@ -1,0 +1,87 @@
+name: docs
+description: Write or update documentation, checked against the source it describes, with a doc review and gates.
+args: "<what to document, or which doc to update>"
+
+skills: [effective-documentation, repo-claude-md, mr-description]
+
+agents:
+  - {name: researcher, model: sonnet}
+  - {name: doc-reviewer, model: sonnet}
+
+steps:
+  - id: survey
+    type: instruct
+    title: Read the source the doc will describe
+    delegate: researcher
+    do: >
+      For the documentation requested, find the source files it must be true
+      to, any existing docs that cover the same ground, and where docs of this
+      kind live in the repo. Report paths, what each establishes, and where
+      existing docs disagree with the source.
+
+  - id: approve-scope
+    type: gate
+    ask: >
+      Here is the reader, the file to write or change, and the source files it
+      will be checked against. Is this the right scope?
+    revise: survey
+
+  - id: branch
+    type: vcs
+    action: branch
+
+  - id: write
+    type: instruct
+    title: Write the doc
+    skills: [effective-documentation, repo-claude-md]
+    do: >
+      Write or update the doc for the agreed reader. State only what the
+      source files bear out. Load repo-claude-md only when the doc is a
+      CLAUDE.md. A how-to guide lists the files it summarises under `sources`
+      in its frontmatter.
+
+  - id: doc-loop
+    type: loop
+    until: The doc reviewer reports no wrong statement and no blocker.
+    max: 3
+    steps:
+      - id: doc-review
+        type: agents
+        spawn: [doc-reviewer]
+        prompt: >
+          Review the changed documentation files against the source they
+          describe. Check every command, path, name and number. Report in your
+          agent's format.
+      - id: doc-fix
+        type: instruct
+        when: The doc review reported at least one finding.
+        skills: [effective-documentation]
+        do: Correct each finding against the source. Do not soften a wrong statement into a vague one; make it right or remove it.
+
+  - id: checks
+    type: check
+    run: [lint, build]
+    fix: true
+
+  - id: commit
+    type: vcs
+    action: commit
+
+  - id: approve-publish
+    type: gate
+    ask: The doc is committed locally. Approve to push the branch and open a merge request.
+    revise: write
+
+  - id: push
+    type: vcs
+    action: push
+    outward: true
+    gate: approve-publish
+
+  - id: merge-request
+    type: vcs
+    action: merge_request
+    outward: true
+    gate: approve-publish
+    skills: [mr-description]
+    when: The profile's forge is not none.

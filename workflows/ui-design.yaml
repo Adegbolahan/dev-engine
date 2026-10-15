@@ -1,0 +1,198 @@
+name: ui-design
+description: Design, redesign or review a UI. Research the current app and comparable apps, answer the discovery questions (from the request, the code, the research, then the person), write a design brief, build to the visual rules, and review against the UI checklist before a merge request.
+args: "<what to design, redesign or review, e.g. \"redesign the settings page\" or \"a signup flow like Linear's\">"
+
+skills: [ui-ux-design, mr-description]
+
+agents:
+  - {name: ui-researcher, model: sonnet}
+  - {name: prior-art-researcher, model: sonnet}
+  - {name: ui-reviewer, model: opus}
+  - {name: implementer, model: opus}
+
+steps:
+  - id: research
+    type: agents
+    title: Research the current app and comparable apps
+    spawn: [ui-researcher, prior-art-researcher]
+    prompt: >
+      The design request is the run's args. Give each agent the absolute
+      path of skills/ui-ux-design/SKILL.md under the plugin root. Answer the
+      discovery questions in Part 1 of that skill from your agent's lens:
+      ui-researcher from the app's code, prior-art-researcher from the apps
+      the request names and comparable apps on the web. Every answer carries
+      its source and confidence, or says unknown. Report in your agent's
+      format.
+    merge: >
+      Combine both reports into one table keyed by discovery question,
+      giving the answer, its source (path:line or URL) and its confidence.
+      Where the two disagree, keep both and mark the conflict. Open each
+      cited path and drop any answer the source does not bear out. Keep the
+      reusable-pieces list and the expected-patterns list. Record the request
+      size (small tweak, new screen or redesign, or review) as the skill's
+      scaling table defines it.
+
+  - id: discovery
+    type: instruct
+    title: Ask the questions research could not answer
+    skills: [ui-ux-design]
+    do: >
+      Follow Part 1 of the ui-ux-design skill, scaled to the request size.
+      Treat a must-know as answered when the merged research gives it a
+      source with high or medium confidence, or when the request states it.
+      Ask about every other must-know, and every conflict, in one
+      AskUserQuestion batch: at most 4 questions, in the skill's priority
+      order. Put the recommended default first, and build the options from
+      what research found, for example naming the design system it detected.
+      Default whatever remains and mark it assumed. For a small tweak, ask
+      nothing and record the assumptions. Keep every question with its answer
+      and source for the brief.
+
+  - id: brief
+    type: artifact
+    template: design-brief
+
+  - id: approve-brief
+    type: gate
+    ask: >
+      Is this the brief to design against? Check the answers marked assumed
+      and the Output line. Design starts on approval.
+    revise: discovery
+
+  - id: branch
+    type: vcs
+    action: branch
+    when: The brief's Output is working code.
+
+  - id: build
+    type: instruct
+    title: Build the design in the app
+    when: The brief's Output is working code.
+    delegate: implementer
+    inputs: [design-brief]
+    do: >
+      Build the design the brief describes. Follow Part 2 of the ui-ux-design
+      skill and its references/visual-design.md, and give their absolute paths
+      in the prompt. Reuse the tokens, components and layouts the brief lists
+      under Reuse and Fits into, rather than writing parallel versions. Design
+      every state the skill lists, and support each theme the brief names.
+      Write tests for behaviour the design adds. If the brief cannot be met as
+      written, stop and report what you found.
+
+  - id: mock
+    type: instruct
+    title: Produce the mock, wireframe or recommendations
+    when: The brief's Output is an HTML mock, a wireframe or recommendations.
+    skills: [ui-ux-design]
+    inputs: [design-brief]
+    do: >
+      Write the deliverable the brief's Output names to
+      .dev-engine/specs/<run-id>/: mock.html (a single self-contained file),
+      wireframe.md, or recommendations.md. Follow Part 2 of the skill. For
+      recommendations about an existing UI, run the skill's review checklist
+      against the current screens. Cite each finding as path:line with its
+      fix, most severe first. Record the deliverable's path in the run log.
+
+  - id: checks
+    type: check
+    when: The build step ran.
+    run: [typecheck, lint, test, build]
+    fix: true
+
+  - id: ui-loop
+    type: loop
+    until: The latest UI review left no open blocker or major finding.
+    max: 3
+    steps:
+      - id: ui-review
+        type: agents
+        title: Review against the brief and the UI checklist
+        spawn: [ui-reviewer]
+        inputs: [design-brief]
+        prompt: >
+          Review the deliverable against the design brief and the review
+          checklist in the ui-ux-design skill, and give the skill's absolute
+          path. For code, review the changes between the branch's base commit
+          and the working tree, including uncommitted changes. Otherwise,
+          review the deliverable file recorded in the run log. Report in your
+          agent's format, color-pair list first.
+        merge: >
+          Compute every listed color pair with python3
+          <plugin root>/skills/ui-ux-design/scripts/contrast.py. Add a blocker
+          for each text pair under 4.5:1 (3:1 for large text) and each UI or
+          focus pair under 3:1. Open each cited file and line and drop any
+          finding the source does not bear out. Keep the severity the evidence
+          supports.
+
+      - id: ui-fix
+        type: instruct
+        title: Fix the UI findings
+        when: The review left at least one open blocker or major finding.
+        delegate: implementer
+        inputs: [design-brief]
+        do: >
+          Fix each blocker and major finding in the merged list at its cause,
+          in the code or in the deliverable file. Follow the ui-ux-design
+          skill, and give its absolute path. Change nothing the findings do
+          not call for. For each finding, report the files changed, or why it
+          was left alone.
+
+      - id: ui-recheck-commands
+        type: check
+        when: The fix step ran and the brief's Output is working code.
+        run: [typecheck, lint, test]
+        fix: true
+
+  - id: ui-remaining
+    type: gate
+    title: Decide on what is left
+    when: Blocker or major UI findings are still open after the loop.
+    ask: >
+      The UI review loop ended with these findings still open. Approve to
+      accept them as they are, revise to give direction and run another
+      pass, or abort.
+    revise: ui-loop
+
+  - id: code-review
+    type: workflow
+    when: The brief's Output is working code.
+    run: review
+
+  - id: commit
+    type: vcs
+    action: commit
+    when: The brief's Output is working code.
+
+  - id: approve-publish
+    type: gate
+    when: The brief's Output is working code.
+    ask: >
+      The design is built, reviewed and committed locally. Approve to push
+      the branch and open a merge request against the base branch.
+    revise: build
+
+  - id: push
+    type: vcs
+    action: push
+    outward: true
+    gate: approve-publish
+    when: The brief's Output is working code.
+
+  - id: merge-request
+    type: vcs
+    action: merge_request
+    outward: true
+    gate: approve-publish
+    skills: [mr-description]
+    inputs: [design-brief]
+    when: The brief's Output is working code and the profile's forge is not none.
+
+  - id: report
+    type: instruct
+    title: Report
+    do: >
+      Summarise the run. Give the brief's path and the answers that were
+      assumed. Give where the deliverable is: the branch and merge request,
+      or the mock, wireframe or recommendations file. Say how many UI review
+      passes ran, what was found and fixed, and what was accepted as it is.
+      Cite files as path:line.

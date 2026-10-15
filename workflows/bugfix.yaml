@@ -1,0 +1,88 @@
+name: bugfix
+description: Fix a bug from report to open merge request, with a confirmed root cause, a failing test first, checks, review and gates.
+args: "<the bug: what happens and how to see it>"
+
+skills: [mr-description]
+
+agents:
+  - {name: researcher, model: sonnet}
+  - {name: implementer, model: opus}
+
+steps:
+  - id: reproduce
+    type: instruct
+    title: Reproduce it
+    do: >
+      Reproduce the bug with the shortest steps you can find and keep the
+      exact output. If it cannot be reproduced, say what was tried and ask the
+      person for more before going on.
+    on_fail: ask
+
+  - id: root-cause
+    type: instruct
+    title: Find the root cause
+    delegate: researcher
+    do: >
+      Given the reproduction steps and output, find why the bug happens. Trace
+      from the symptom to the line that causes it and confirm by reading the
+      code path end to end. List other callers that reach the same cause.
+      Report the cause as path:line with the reasoning. Do not propose code.
+
+  - id: bug-spec
+    type: artifact
+    template: bug
+
+  - id: approve-fix
+    type: gate
+    ask: Is this the right cause and the right fix? The fix starts on approval.
+    revise: root-cause
+
+  - id: branch
+    type: vcs
+    action: branch
+
+  - id: fix
+    type: instruct
+    title: Failing test, then fix
+    delegate: implementer
+    inputs: [bug]
+    do: >
+      First write the regression test the bug spec names and run it to see it
+      fail for the reason the spec gives. Then make the fix the spec
+      describes, at the root cause. Report the failing output before and the
+      passing output after.
+
+  - id: checks
+    type: check
+    run: [typecheck, lint, test, build]
+    fix: true
+
+  - id: review
+    type: workflow
+    run: review
+
+  - id: commit
+    type: vcs
+    action: commit
+
+  - id: approve-publish
+    type: gate
+    ask: >
+      The fix is committed locally. Approve to push the branch and open a
+      merge request against the base branch.
+    revise: fix
+
+  - id: push
+    type: vcs
+    action: push
+    outward: true
+    gate: approve-publish
+
+  - id: merge-request
+    type: vcs
+    action: merge_request
+    outward: true
+    gate: approve-publish
+    skills: [mr-description]
+    inputs: [bug]
+    when: The profile's forge is not none.

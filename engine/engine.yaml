@@ -1,0 +1,206 @@
+# The engine spec. Claude reads this and follows it; scripts/validate.rb reads
+# the same data to check workflows. There is no interpreter: this file is the
+# contract.
+version: 1
+
+# Models a workflow may name for an agent.
+models: [opus, sonnet, haiku]
+
+# Command keys a profile may define and a `check` step may run.
+# A profile sets a key to null when it does not apply; the check skips it.
+# `policy` is for gates a repo's CI runs beyond lint and tests.
+commands: [typecheck, lint, policy, test, build, run]
+
+# Forges a profile may name. `none` means merge requests are not available.
+forges: [github, gitlab, none]
+
+# Fields every step may carry, whatever its type.
+common_fields:
+  required: [id, type]
+  optional: [title, when, on_fail, skills, outward, gate]
+
+step_types:
+  instruct:
+    does: Claude does the work after loading the step's skills. With `delegate`, a declared agent does it instead.
+    required: [do]
+    optional: [delegate, inputs]
+  agents:
+    does: Spawns the listed declared agents in parallel, each with the same prompt and inputs, then merges their reports.
+    required: [spawn, prompt]
+    optional: [inputs, merge]
+  check:
+    does: Runs the profile's commands for the listed keys, in order. With `fix`, fixes root causes and re-runs.
+    required: [run]
+    optional: [fix, max_attempts, defer_to_commit]
+  gate:
+    does: Asks the person and waits for approve, revise or abort.
+    required: [ask]
+    optional: [revise]
+  artifact:
+    does: Writes a story, plan or bug spec from a template.
+    required: [template]
+    optional: [inputs]
+  vcs:
+    does: Creates a branch, commits, pushes, opens a merge request, merges into the base branch or pushes the base branch.
+    required: [action]
+    optional: [inputs]
+  workflow:
+    does: Runs another workflow inline, optionally in another repo's clone.
+    required: [run]
+    optional: [repo, args]
+  loop:
+    does: Repeats its nested steps until the condition holds, up to a maximum.
+    required: [until, max, steps]
+    optional: []
+
+vcs_actions:
+  branch: {outward: false}
+  commit: {outward: false}
+  push: {outward: true}
+  merge_request: {outward: true}
+  merge: {outward: false}
+  push_base: {outward: true}
+
+# ---------------------------------------------------------------------------
+# Semantics. Every run obeys these.
+# ---------------------------------------------------------------------------
+
+statuses:
+  step:
+    pending: Not started.
+    running: Started and not finished. A resumed run restarts a running step from its beginning.
+    done: Finished and its result holds.
+    skipped: Its `when` was false, or a check key was null in the profile.
+    failed: Could not finish. `on_fail` decides what happens next.
+  run:
+    running: Steps remain.
+    waiting: Stopped at a gate or at a failed step that asked the person.
+    done: Every step is done or skipped.
+    aborted: The person chose abort at a gate, or a step failed with on_fail stop.
+
+failure:
+  on_fail:
+    stop: Mark the step failed and the run aborted, report what failed with its output, and end. This is the default.
+    ask: Mark the step failed and the run waiting, show the output, and ask the person whether to retry, skip or abort.
+    continue: Mark the step failed, record why in the log, and go on. Only for steps whose result nothing later depends on.
+  check_with_fix: >
+    A failing command is fixed at its root cause and every key in the step is
+    re-run from the first. Never weaken, skip or delete a test, loosen a lint
+    rule or add an ignore comment to make a command pass. After `max_attempts`
+    rounds (default 3) the step fails.
+  commit_hook: >
+    A profile may list under `commit_hook` the command keys its commit hook
+    already runs. A check step with `defer_to_commit: true` skips those keys,
+    because the commit step will run them. A commit a hook rejects is a
+    failed check: fix the root cause and commit again, up to three rounds,
+    then fail the step. Never bypass a hook.
+  loop_exhausted: >
+    A loop that reaches `max` without its condition holding is marked done
+    with a note saying the condition did not hold. The step after it must
+    deal with that, normally a gate.
+
+rules:
+  declare: >
+    Load only skills the workflow lists under `skills`, and spawn only agents
+    it lists under `agents`, each with the model given there. If the work
+    needs something undeclared, stop and say so; do not improvise.
+  when: >
+    `when` is a condition in plain words. Evaluate it against the run so far.
+    If it is false the step is skipped. If it cannot be decided, ask.
+  gates: >
+    A gate is answered by the person, never assumed. Show what is being
+    approved (the artifact path, the diff summary, the exact command) and
+    offer approve, revise and abort. On revise, take the person's notes, go
+    back to the step named by `revise` (default: the step before the gate),
+    redo from there and ask again. An approval covers only this run and only
+    the steps that name the gate. Record the answer in the run log before
+    doing anything else: scripts/guard-gates.sh denies a push or a merge
+    request while the gate that allows it is not recorded as approved.
+  outward: >
+    A step that pushes, opens a merge request, deploys, or changes another
+    repo is marked `outward: true` and names in `gate` the gate that allows
+    it. Before running it, confirm that gate is recorded as approved in this
+    run's log. If it is not, do not run the step.
+  read_only: >
+    Reviewer, researcher and navigator agents are read-only. Their tool lists
+    hold no write tools, and hooks/hooks.json denies edits and any command
+    outside the allowlist in scripts/guard-agents.sh. A denial is final: do
+    not retry the same action from the main session on the agent's behalf.
+  profiles: >
+    Workflows name command keys, never commands. Resolve the profile for the
+    repo once at the start of the run and take every command, the base branch
+    and the forge from it. If no profile matches, stop and say so.
+  artifacts: >
+    Artifacts are written to .dev-engine/specs/<run-id>/<template>.md in the
+    repo. They stay within the template's `max_lines` and hold no code: no
+    code fences, no diffs, no signatures. Name files and behaviours instead.
+    Every `inputs` entry names an artifact; give its path to the agent or
+    step that lists it. An input that this run never wrote is left out.
+  map: >
+    The ledger and the how-to guides record what was true when surveyed.
+    Before acting on a fact from either, confirm it against the source.
+  subworkflow: >
+    A `workflow` step runs the named workflow's steps inline as part of this
+    run. Its step ids are logged as <step-id>/<inner-id>. It uses the same
+    artifacts. With `repo`, it runs in that profile's clone, which makes the
+    step outward.
+  workspace: >
+    A profile may define `workspace` with `create`, `remove` and `path`, each
+    a template taking `{name}`, `{plugin}` (this plugin's root directory)
+    and, for `create`, `{repos}`. When it does,
+    the `branch` action runs `create` to make an isolated checkout on a new
+    branch, and every later step works in the directory `path` names. The
+    run log and the specs stay where the run started. The base branch is
+    still merged and pushed from the original clone. Remove the workspace
+    only after the run's last push is verified, with `remove`, never forced.
+    Without `workspace`, `branch` branches in place. Outside a run the same
+    holds: in a repo whose profile defines `workspace`, make code changes in
+    a workspace, not in the clone the session started in.
+  multi_repo: >
+    A run spans the repos its plan or bug spec lists under `Repos`, in the
+    order given there: a repo before the repos that depend on it. Each must
+    have a profile. `branch`, `commit`, `merge` and `push_base` act on every
+    listed repo in that order, and a check step runs in each with that
+    repo's own commands. One gate covers the whole list, so show every repo
+    and commit when asking. Record the list in the log under `repos`, and in
+    each repo other than the run's own write a pointer at
+    .dev-engine/runs/<run-id>.yaml holding `run` and `primary`, the path of
+    the real log, so the gate guard sees the run there too. Delete the
+    pointers when the run ends.
+  delegation: >
+    A delegated or spawned agent gets: the step's `do` or `prompt`, the paths
+    of its inputs, the profile's commands, and the repo path. It does not get
+    this conversation, so the prompt must stand alone.
+
+# ---------------------------------------------------------------------------
+# Run log. Written after every step so `resume` can continue in a new session.
+# ---------------------------------------------------------------------------
+
+run_log:
+  path: .dev-engine/runs/<run-id>.yaml
+  run_id: <YYYYMMDD-HHMM>-<workflow>-<short-slug-of-args>
+  ignore: >
+    .dev-engine/ is local state. If the repo does not already ignore it, add
+    it to .git/info/exclude, not to .gitignore.
+  fields:
+    run: The run id.
+    workflow: The workflow name.
+    profile: The profile that matched.
+    repo: Absolute path of the clone.
+    branch: The branch the run works on, once known.
+    repos: When the run spans repos, each one's profile, clone path and commit, in push order.
+    workspace: The isolated checkout's path, when the profile made one.
+    args: The arguments as given.
+    status: A run status.
+    started: ISO 8601 time.
+    updated: ISO 8601 time of the last write.
+    artifacts: Map of template name to path.
+    gates: Map of gate id to a map with `answer` (approve, revise or abort), `time` and the person's `notes`. scripts/guard-gates.sh reads `answer`.
+    steps: List of step id, status, time and a one-line note. Loop passes are logged as <loop-id>#<n>/<inner-id>.
+  resume: >
+    Read the newest log whose status is running or waiting, or the one named.
+    Confirm the repo, branch and artifact paths still exist and that the
+    working tree matches what the log expects; if not, say what differs and
+    ask. Continue at the first step that is not done or skipped. A gate
+    approved in an earlier session is asked again if any outward step naming
+    it has not yet run.

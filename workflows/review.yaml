@@ -1,0 +1,87 @@
+name: review
+description: Review the branch's changes with four parallel reviewers, fix what they find, and re-check until clean.
+args: "[base branch; defaults to the profile's base_branch]"
+
+skills: []
+
+agents:
+  - {name: correctness-reviewer, model: opus}
+  - {name: security-reviewer, model: sonnet}
+  - {name: test-reviewer, model: sonnet}
+  - {name: maintainability-reviewer, model: sonnet}
+  - {name: implementer, model: sonnet}
+
+steps:
+  - id: scope
+    type: instruct
+    title: Work out what is under review
+    do: >
+      Find the merge base of the current branch and the base branch. List the
+      changed files, committed and uncommitted. If nothing has changed, say so
+      and end the run as done. Record the base commit in the run log.
+
+  - id: review-loop
+    type: loop
+    until: The latest full pass left no open blocker or major finding.
+    max: 3
+    steps:
+      - id: full-pass
+        type: agents
+        title: Full review pass
+        spawn: [correctness-reviewer, security-reviewer, test-reviewer, maintainability-reviewer]
+        inputs: [story, plan, bug]
+        prompt: >
+          Review the changes between the recorded base commit and the working
+          tree, including uncommitted changes. Read the surrounding code, not
+          only the diff. Hold the change to the story, plan or bug spec if one
+          is given. Report findings in your agent's format.
+        merge: >
+          Combine the four reports into one list. Merge duplicates. Open each
+          cited file and line and drop any finding the source does not bear
+          out. Keep the severity the evidence supports, not the highest one
+          claimed.
+
+      - id: fix
+        type: instruct
+        title: Fix the findings
+        when: The full pass left at least one open blocker or major finding.
+        delegate: implementer
+        inputs: [story, plan, bug]
+        do: >
+          Fix each blocker and major finding in the merged list at its root
+          cause. Do not change anything the findings do not call for. For each
+          finding, report the files changed, or why it was left alone.
+
+      - id: recheck
+        type: agents
+        title: Targeted re-check of the fix
+        when: The fix step ran.
+        spawn: [correctness-reviewer]
+        prompt: >
+          Look only at the changes the fix step made. For each finding it
+          claims to fix, say whether the fix removes the cause, and whether it
+          broke anything next to it. Do not re-review the rest of the branch.
+
+      - id: recheck-commands
+        type: check
+        when: The fix step ran.
+        run: [typecheck, lint, test]
+        fix: true
+
+  - id: remaining
+    type: gate
+    title: Decide on what is left
+    when: Blocker or major findings are still open after the loop.
+    ask: >
+      The review loop ended with these findings still open. Approve to accept
+      them as they are, revise to give direction and run another pass, or
+      abort.
+    revise: review-loop
+
+  - id: report
+    type: instruct
+    title: Report
+    do: >
+      Summarise the run: how many passes, what was found, what was fixed and
+      where, what was accepted as-is, and any minor findings left for the
+      person to consider. Cite files as path:line.

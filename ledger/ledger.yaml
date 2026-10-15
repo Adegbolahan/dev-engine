@@ -1,0 +1,30 @@
+# The ledger: a map of repos, packages and environments and the edges between
+# them. It records what was true on the `surveyed` date. Agents confirm an
+# edge against source before acting on it.
+#
+# Node ids are <kind>:<name>. A repo's name is its profile name in
+# engine/profiles.yaml.
+#
+# Schema:
+#   repos:        [{id: repo:<profile>, path_hint, description}]
+#   packages:     [{id: package:<name>, repo: repo:<profile>, path, description}]
+#   environments: [{id: env:<name>, description, url}]
+#   edges:        [{from: <id>, to: <id>, kind, evidence}]
+#     kind:     depends_on | calls | publishes_to | deploys_to | shares_schema_with
+#     evidence: the path that shows the edge, as <profile>:<path>
+
+surveyed: "2026-10-13"
+
+repos:
+  - id: repo:dev-engine
+    path_hint: ~/Code/dev-engine
+    description: This plugin.
+  - id: repo:skyline
+    path_hint: ~/Code/skyline
+    description: "Deployment-as-a-service across EKS, GKE and AKS: kopf controller, FastAPI/MCP API, React console, Terraform modules."
+
+packages: []
+
+environments: []
+
+edges: []

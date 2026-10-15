@@ -1,0 +1,8 @@
+{
+  "name": "dev-engine",
+  "version": "0.1.0",
+  "description": "Gated, repeatable development workflows written in YAML: one /dev command walks a workflow's steps with declared skills, agents and models, and stops where a person must approve.",
+  "author": {
+    "name": "Taofeek Abayomi"
+  }
+}
