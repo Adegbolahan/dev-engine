@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Checks this machine has what the plugin needs. Add the checks your stack
-# needs (runtimes, CLIs, logins) to the section at the bottom.
+# Checks this machine has what the plugin needs, and says where the user
+# ledger is. A missing ledger is not a failure: one repo needs none.
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 missing=0
@@ -36,7 +36,12 @@ else
   missing=$((missing + 1))
 fi
 
-# --- stack checks: add yours below ----------------------------------------
+ledger="${DEV_ENGINE_LEDGER:-$HOME/.config/dev-engine/ledger.yaml}"
+if [ -f "$ledger" ]; then
+  printf 'ok       %-8s %s\n' "ledger" "$ledger"
+else
+  printf 'optional %-8s %s\n' "ledger" "$ledger does not exist; /dev init creates it"
+fi
 
 if [ "$missing" -gt 0 ]; then
   printf '\n%d required item(s) missing.\n' "$missing"

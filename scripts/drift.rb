@@ -1,10 +1,10 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# Compares what the plugin says about its repos with the repos on this
-# machine: profiles, the ledger and the paths the skills cite. Prints one line
-# per check and exits 1 if anything has drifted. It reads only; it never
-# fetches unless asked and never changes a file.
+# Compares what the user ledger and each repo's profile say with the repos on
+# this machine, and checks the paths the skills cite. Prints one line per
+# check and exits 1 if anything has drifted. It reads only; it never fetches
+# unless asked and never changes a file.
 #
 #   ruby scripts/drift.rb           compare against the local checkouts
 #   ruby scripts/drift.rb --fetch   run `git fetch` in each repo first
@@ -16,6 +16,7 @@ require 'yaml'
 require 'json'
 require 'date'
 require 'set'
+require_relative 'config'
 
 ROOT = File.expand_path('..', __dir__)
 FETCH = ARGV.include?('--fetch')
@@ -45,8 +46,43 @@ rescue JSON::ParserError
   nil
 end
 
-profiles = (YAML.safe_load(File.read(File.join(ROOT, 'engine/profiles.yaml'))) || {})['profiles'] || {}
-ledger = YAML.safe_load(File.read(File.join(ROOT, 'ledger/ledger.yaml'))) || {}
+# A repo's profile; nil if it has none, false if it is broken (already drift).
+def profile_in(name, dir)
+  prof = DevEngineConfig.load(DevEngineConfig.profile_path(dir))
+  return prof if prof.is_a?(Hash)
+
+  drift("#{name}: #{DevEngineConfig::PROFILE_REL} is not a mapping")
+  false
+rescue Errno::ENOENT
+  nil
+rescue Psych::Exception => e
+  drift("#{name}: #{DevEngineConfig::PROFILE_REL} is not valid YAML: #{e.message}")
+  false
+end
+
+ledger_path = DevEngineConfig.ledger_path
+ledger = begin
+  DevEngineConfig.load(ledger_path) || {}
+rescue Errno::ENOENT
+  nil
+rescue Psych::Exception => e
+  puts "  DRIFT  the ledger at #{ledger_path} is not valid YAML: #{e.message}"
+  exit 1
+end
+
+# With no ledger there is one repo to check: the current one, if set up.
+have_ledger = !ledger.nil?
+unless have_ledger
+  note("no ledger at #{ledger_path} (set #{DevEngineConfig::LEDGER_ENV} to use another); checking only the current repo")
+  here = DevEngineConfig.repo_root
+  own = here && profile_in(File.basename(here), here)
+  if own && !own['name'].is_a?(String)
+    drift("#{File.basename(here)}: #{DevEngineConfig::PROFILE_REL} has no `name`")
+    own = nil
+  end
+  repos = own ? [{ 'id' => "repo:#{own['name']}", 'path_hint' => here }] : []
+  ledger = { 'repos' => repos }
+end
 repos = Array(ledger['repos'])
 packages = Array(ledger['packages'])
 edges = Array(ledger['edges'])
@@ -69,16 +105,12 @@ repos.each do |r|
   next note("#{name}: #{r['path_hint']} is not a git repo, so its profile cannot be checked") if top.empty?
 
   git(dir, 'fetch', '--quiet') if FETCH
-  profile = profiles[name]
-  next drift("#{name}: in the ledger but has no profile") unless profile
+  profile = profile_in(name, dir)
+  next if profile == false
+  next drift("#{name}: in the ledger but #{r['path_hint']} has no #{DevEngineConfig::PROFILE_REL}") unless profile
 
   problems = []
-  remote = git(dir, 'remote', 'get-url', 'origin')
-  pattern = profile.dig('match', 'remote')
-  problems << "remote #{remote} does not match #{pattern}" if pattern && remote !~ Regexp.new(pattern)
-  Array(profile.dig('match', 'files')).each do |f|
-    problems << "match file #{f} is missing" unless File.exist?(File.join(dir, f))
-  end
+  problems << "its profile is named `#{profile['name']}`, not `#{name}` as in the ledger" unless profile['name'] == name
   head = git(dir, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD').sub('origin/', '')
   problems << "base_branch is #{profile['base_branch']} but the remote's default is #{head}" unless head.empty? || head == profile['base_branch']
 
@@ -175,7 +207,10 @@ search_roots = paths.values + [ROOT]
 cited = Hash.new { |h, k| h[k] = [] }
 # A skill may cite its own bundled files (references/, scripts/) relative to its directory.
 cited_from = Hash.new { |h, k| h[k] = [] }
-(Dir.glob(File.join(ROOT, 'skills/*/SKILL.md')) + Dir.glob(File.join(ROOT, 'workflows/*.yaml'))).sort.each do |file|
+# The plugin's skills and workflows, and each repo's own stack skills.
+sources = Dir.glob(File.join(ROOT, 'skills/*/SKILL.md')) + Dir.glob(File.join(ROOT, 'workflows/*.yaml'))
+paths.each_value { |dir| sources += Dir.glob(File.join(dir, '.claude/skills/*/SKILL.md')) }
+sources.uniq.sort.each do |file|
   workflow = file.end_with?('.yaml')
   File.read(file).scan(/`([^`\s]+)`/).flatten.each do |token|
     # A workflow also names files its steps create; only the guides it tells a run to read must exist.
@@ -206,7 +241,9 @@ ok("#{cited.size} cited paths, all found") if unfound.empty?
 
 puts 'Survey'
 surveyed = Date.parse(ledger['surveyed'].to_s) rescue nil
-if surveyed
+if !have_ledger
+  note("no ledger at #{ledger_path}, so there is no survey date")
+elsif surveyed
   age = (Date.today - surveyed).to_i
   note("the ledger was surveyed #{age} day(s) ago (#{surveyed}); set `surveyed` after re-checking it") if age > 30
   ok("ledger surveyed #{surveyed}") if age <= 30

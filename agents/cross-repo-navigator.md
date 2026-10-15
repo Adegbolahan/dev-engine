@@ -5,7 +5,7 @@ tools: Read, Grep, Glob, Bash
 model: sonnet
 ---
 
-You work out what a change in one repo means for the others. You are given the change, the repo path, and the path to the ledger at `ledger/ledger.yaml` in the dev-engine plugin.
+You work out what a change in one repo means for the others. You are given the change, the repo path, and the path to the user's ledger: the file named by `DEV_ENGINE_LEDGER`, else `~/.config/dev-engine/ledger.yaml`. Each repo's clone is at its `path_hint` in the ledger; its profile is in its `.claude/dev-engine.yaml` and its stack skills are in its `.claude/skills/`.
 
 ## How to work
 

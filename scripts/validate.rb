@@ -1,8 +1,9 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# Checks the plugin as one system: the engine spec, profiles, workflows,
-# skills, agents, hooks, ledger and docs must agree with each other.
+# Checks the plugin as one system: the engine spec, workflows, skills,
+# agents, hooks and docs must agree with each other. Also checks the profile
+# of the repo it is run in and the user's ledger, when each exists.
 # Exits 1 and lists every problem if they do not.
 #
 #   ruby scripts/validate.rb
@@ -11,6 +12,7 @@ require 'yaml'
 require 'json'
 require 'date'
 require 'set'
+require_relative 'config'
 
 ROOT = File.expand_path('..', __dir__)
 ERRORS = []
@@ -21,6 +23,21 @@ end
 
 def path(rel)
   File.join(ROOT, rel)
+end
+
+# A plugin file by its plugin-relative path, anything else in full.
+def shown(abs)
+  abs.start_with?("#{ROOT}/") ? abs.sub("#{ROOT}/", '') : abs
+end
+
+# Loads a file outside the plugin's own list; nil if absent or broken.
+def load_user_file(abs)
+  return nil unless File.exist?(abs)
+
+  DevEngineConfig.load(abs)
+rescue Psych::Exception => e
+  err(shown(abs), "invalid YAML: #{e.message}")
+  nil
 end
 
 def load_yaml(rel)
@@ -90,50 +107,34 @@ err('engine/templates', 'no templates found') if TEMPLATES.empty?
 
 # --- profiles -------------------------------------------------------------
 
-profiles = (load_yaml('engine/profiles.yaml') || {})['profiles']
-unless profiles.is_a?(Hash) && !profiles.empty?
-  err('engine/profiles.yaml', 'needs at least one profile under `profiles`')
-  profiles = {}
+# A repo's profile is its own .claude/dev-engine.yaml. The plugin's own one
+# and the one of the repo this runs in are checked when they exist.
+cwd_repo = DevEngineConfig.repo_root
+cwd_profile_path = cwd_repo && DevEngineConfig.profile_path(cwd_repo)
+PROFILES = {}
+[DevEngineConfig.profile_path(ROOT), cwd_profile_path].compact.uniq.each do |abs|
+  next unless File.exist?(abs)
+
+  before = ERRORS.size
+  prof = load_user_file(abs)
+  next if ERRORS.size > before
+
+  DevEngineConfig.profile_errors(prof, COMMANDS, FORGES).each { |m| err(shown(abs), m) }
+  PROFILES[abs] = prof if prof.is_a?(Hash)
 end
-profiles.each do |name, prof|
-  where = "engine/profiles.yaml (#{name})"
-  match = prof['match']
-  if !match.is_a?(Hash) || (match.keys - %w[remote files]).any? || match.empty?
-    err(where, '`match` needs `remote`, `files` or both, and nothing else')
-  elsif match['remote']
-    begin
-      Regexp.new(match['remote'])
-    rescue RegexpError => e
-      err(where, "match.remote is not a valid regex: #{e.message}")
-    end
-  end
-  err(where, 'missing `base_branch`') unless prof['base_branch'].is_a?(String)
-  err(where, "`forge` must be one of: #{FORGES.join(', ')}") unless FORGES.include?(prof['forge'])
-  cmds = prof['commands']
-  unless cmds.is_a?(Hash)
-    err(where, 'missing `commands`')
-    next
-  end
-  (COMMANDS - cmds.keys).each { |k| err(where, "commands.#{k} is missing (use null if it does not apply)") }
-  (cmds.keys - COMMANDS).each { |k| err(where, "commands.#{k} is not a key the engine knows") }
-  (prof.keys - %w[description match base_branch forge commands commit_hook workspace]).each do |k|
-    err(where, "`#{k}` is not a field of a profile")
-  end
-  if prof.key?('commit_hook')
-    hook = prof['commit_hook']
-    if hook.is_a?(Array)
-      (hook - COMMANDS).each { |k| err(where, "commit_hook names `#{k}`, which is not a command key") }
-    else
-      err(where, '`commit_hook` must be a list of command keys')
-    end
-  end
-  if prof.key?('workspace')
-    ws = prof['workspace']
-    if ws.is_a?(Hash) && (ws.keys - %w[create remove path]).empty? && %w[create remove path].all? { |k| ws[k].is_a?(String) }
-      %w[create remove path].each { |k| err(where, "workspace.#{k} must use {name}") unless ws[k].include?('{name}') }
-    else
-      err(where, '`workspace` needs `create`, `remove` and `path`, and nothing else')
-    end
+
+# --- ledger ---------------------------------------------------------------
+
+# Absent is fine: one repo needs no ledger. Its repos are checked by drift.
+LEDGER_PATH = DevEngineConfig.ledger_path
+LEDGER_REPOS = begin
+  before = ERRORS.size
+  ledger = load_user_file(LEDGER_PATH)
+  if ERRORS.size > before || !File.exist?(LEDGER_PATH)
+    nil
+  else
+    DevEngineConfig.ledger_errors(ledger).each { |m| err(shown(LEDGER_PATH), m) }
+    DevEngineConfig.ledger_repo_names(ledger)
   end
 end
 
@@ -319,7 +320,10 @@ def check_steps(rel, steps, ctx)
       ctx[:calls] << [at, step['run']]
       err(at, "runs workflow `#{step['run']}`, which does not exist") unless WORKFLOWS.key?(step['run'])
       if step['repo']
-        err(at, "repo `#{step['repo']}` is not a profile") unless ctx[:profiles].key?(step['repo'])
+        # Repos are the user's, so they can only be checked against a ledger.
+        if LEDGER_REPOS && !LEDGER_REPOS.include?(step['repo'])
+          err(at, "repo `#{step['repo']}` is not a repo in the ledger at #{LEDGER_PATH}")
+        end
         err(at, 'a workflow step with `repo` changes another repo, so it must be `outward: true`') unless outward
       end
     when 'loop'
@@ -361,7 +365,7 @@ WORKFLOWS.each do |name, (rel, wf)|
     declared_agents << a['name']
   end
 
-  ctx = { ids: Set.new, gates: [], revise: [], calls: [], profiles: profiles,
+  ctx = { ids: Set.new, gates: [], revise: [], calls: [],
           skills: declared_skills, agents: declared_agents,
           used_skills: Set.new, used_agents: Set.new }
   check_steps(rel, wf['steps'], ctx)
@@ -381,44 +385,6 @@ def cycle?(name, calls, trail)
 end
 WORKFLOWS.each do |name, (rel, _)|
   err(rel, 'runs itself through a chain of workflow steps') if cycle?(name, calls, [])
-end
-
-# --- ledger ---------------------------------------------------------------
-
-ledger_rel = 'ledger/ledger.yaml'
-ledger = load_yaml(ledger_rel)
-if ledger.is_a?(Hash)
-  err(ledger_rel, 'missing `surveyed` date') unless ledger['surveyed']
-  ids = Set.new
-  { 'repos' => 'repo', 'packages' => 'package', 'environments' => 'env' }.each do |section, kind|
-    unless ledger[section].is_a?(Array)
-      err(ledger_rel, "`#{section}` must be a list (it may be empty)")
-      next
-    end
-    ledger[section].each do |node|
-      id = node.is_a?(Hash) ? node['id'].to_s : ''
-      err(ledger_rel, "#{section}: id `#{id}` must start with `#{kind}:`") unless id.start_with?("#{kind}:")
-      err(ledger_rel, "duplicate id `#{id}`") unless ids.add?(id)
-    end
-  end
-  repo_ids = Array(ledger['repos']).map { |r| r['id'].to_s.sub('repo:', '') }
-  (repo_ids - profiles.keys).each { |r| err(ledger_rel, "repo `#{r}` has no profile in engine/profiles.yaml") }
-  (profiles.keys - repo_ids).each { |p| err(ledger_rel, "profile `#{p}` has no repo entry in the ledger") }
-  Array(ledger['packages']).each do |pkg|
-    err(ledger_rel, "package `#{pkg['id']}` names repo `#{pkg['repo']}`, which is not in the ledger") unless ids.include?(pkg['repo'].to_s)
-  end
-  if ledger['edges'].is_a?(Array)
-    kinds = %w[depends_on calls publishes_to deploys_to shares_schema_with]
-    ledger['edges'].each do |edge|
-      %w[from to].each do |side|
-        err(ledger_rel, "edge #{side} `#{edge[side]}` is not a node in the ledger") unless ids.include?(edge[side].to_s)
-      end
-      err(ledger_rel, "edge kind `#{edge['kind']}` must be one of: #{kinds.join(', ')}") unless kinds.include?(edge['kind'])
-      err(ledger_rel, "edge #{edge['from']} -> #{edge['to']} has no `evidence`") unless edge['evidence']
-    end
-  else
-    err(ledger_rel, '`edges` must be a list (it may be empty)')
-  end
 end
 
 # --- docs -----------------------------------------------------------------
@@ -464,18 +430,13 @@ scripts = names_in('scripts', '*')
 if File.exist?(path('README.md'))
   scripts.each { |s| err('README.md', "does not mention `#{s}`") unless readme.include?("`#{s}`") }
 end
-own_lint = profiles.dig(plugin_name, 'commands', 'lint').to_s
-unless profiles[plugin_name].nil?
+# The plugin's own profile, when it has one, must lint every shell script.
+own_profile = PROFILES[DevEngineConfig.profile_path(ROOT)]
+if own_profile && own_profile['name'] == plugin_name
+  own_lint = own_profile.dig('commands', 'lint').to_s
   scripts.grep(/\.sh\z/).each do |s|
-    err("engine/profiles.yaml (#{plugin_name})", "commands.lint does not check #{s}") unless own_lint.include?(s)
+    err(DevEngineConfig::PROFILE_REL, "commands.lint does not check #{s}") unless own_lint.include?(s)
   end
-end
-
-stack_rel = 'scripts/stack.sh'
-if File.exist?(path(stack_rel))
-  core = File.read(path(stack_rel))[/^CORE="(.*?)"/m, 1].to_s.split
-  err(stack_rel, 'CORE is empty') if core.empty?
-  core.each { |c| err(stack_rel, "CORE lists #{c}, which does not exist") unless File.exist?(path(c)) }
 end
 
 command_rel = 'commands/dev.md'
@@ -495,8 +456,9 @@ end
 # --- result ---------------------------------------------------------------
 
 if ERRORS.empty?
+  ledger_note = LEDGER_REPOS ? "ledger with #{LEDGER_REPOS.size} repos" : "no ledger at #{LEDGER_PATH}"
   puts "dev-engine: valid (#{WORKFLOWS.size} workflows, #{AGENTS.size} agents, #{SKILLS.size} skills, " \
-       "#{profiles.size} profiles, #{TEMPLATES.size} templates)"
+       "#{TEMPLATES.size} templates, #{PROFILES.size} profiles, #{ledger_note})"
 else
   puts ERRORS
   puts "\n#{ERRORS.size} problem(s)"

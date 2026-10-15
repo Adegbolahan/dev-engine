@@ -11,8 +11,8 @@ each time, so a line belongs only if a session would go wrong without it.
 ## What belongs
 
 - **Commands**: how to install, typecheck, lint, test (including one test)
-  and run locally, exactly as typed. Keep them the same as this repo's entry
-  in `engine/profiles.yaml`.
+  and run locally, exactly as typed. Keep them the same as the commands in
+  the repo's `.claude/dev-engine.yaml`.
 - **Layout that is not obvious**: where things live when the directory names
   do not say, and which directories are generated or vendored.
 - **Rules the code does not show**: conventions a newcomer would break, such
