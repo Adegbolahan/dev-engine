@@ -1,5 +1,5 @@
 name: bugfix
-description: Fix a bug from report to open merge request, with a confirmed root cause, a failing test first, checks, review and gates.
+description: Fix a bug from report to an open merge request or a pushed base branch, with a confirmed root cause, a failing test first, checks, review, gates and a retrospective.
 args: "<the bug: what happens and how to see it>"
 
 skills: [mr-description]
@@ -7,26 +7,82 @@ skills: [mr-description]
 agents:
   - {name: researcher, model: sonnet}
   - {name: implementer, model: opus}
+  - {name: cross-repo-navigator, model: sonnet}
+  - {name: skeptic, model: sonnet}
 
 steps:
   - id: reproduce
     type: instruct
     title: Reproduce it
     do: >
-      Reproduce the bug with the shortest steps you can find and keep the
-      exact output. If it cannot be reproduced, say what was tried and ask the
-      person for more before going on.
+      First check whether it is already fixed: search the base branch's
+      history for the ticket key, if the args name one, and for the
+      behaviour. If a fix is there, report its commit and end the run as
+      done. Otherwise reproduce the bug with the shortest steps you can find.
+      For a test that fails only under load, first run that one file alone
+      with its timeout cut well below normal; that usually reproduces it in
+      seconds where loading the machine may not. Keep the exact output. If
+      it cannot be reproduced, say what was tried and ask the person for
+      more before going on.
     on_fail: ask
 
-  - id: root-cause
-    type: instruct
-    title: Find the root cause
-    delegate: researcher
-    do: >
-      Given the reproduction steps and output, find why the bug happens. Trace
-      from the symptom to the line that causes it and confirm by reading the
-      code path end to end. List other callers that reach the same cause.
-      Report the cause as path:line with the reasoning. Do not propose code.
+  - id: cause-loop
+    type: loop
+    until: The skeptic's verdict on the root cause is not refuted.
+    max: 3
+    steps:
+      - id: root-cause
+        type: instruct
+        title: Find the root cause
+        delegate: researcher
+        do: >
+          Given the reproduction steps and output, find why the bug happens.
+          Trace from the symptom to the line that causes it and confirm by
+          reading the code path end to end. List other callers that reach the
+          same cause. Report the cause as path:line with the reasoning. Do not
+          propose code. On a later pass, start from what the skeptic found
+          against the previous cause.
+
+      - id: refute-cause
+        type: agents
+        title: Try to break the root cause
+        spawn: [skeptic]
+        prompt: >
+          Claim: the root cause reported by the previous step, quoted in full
+          with its path:line and reasoning, together with the reproduction
+          steps and their output. Try to refute it. In particular look for
+          another cause that produces the same symptom, a caller the cause
+          does not explain, and whether the cited line is on the path the
+          reproduction takes.
+        merge: >
+          Record the verdict. If it is refuted, the loop runs the root-cause
+          step again with what the skeptic found. If it is unproven and the
+          missing check means running something, run it in the main session:
+          the researcher and the skeptic are read-only and cannot run tests.
+          Use a temporary copy of a test for any probe and delete it
+          afterwards. In a repo whose profile defines `workspace`, never run
+          a probe that writes in the original clone: run it read-only, or
+          leave it until after the branch step and say so in the bug spec.
+          A refuted verdict stands; an unproven verdict becomes refuted only if a check contradicts the cause.
+          Carry the verdict, and every check that was run with its result,
+          into the bug spec. If the loop ends with the verdict still refuted,
+          say so plainly: the approve-fix gate shows the open verdict.
+
+  - id: map-reach
+    type: agents
+    title: Which repos this touches
+    spawn: [cross-repo-navigator]
+    prompt: >
+      For the bug and the root cause reported so far, use the ledger to name
+      every repo, package and environment this change reaches: what it must
+      change, and what depends on what it changes. Confirm each edge against
+      its evidence file. Report the repos that need a change, in the order
+      they must be pushed (a repo before the repos that depend on it), and
+      the consumers that need checking but no change.
+    merge: >
+      Carry the list into the Repos section of the bug spec. If more than
+      one repo needs a change, say so plainly when the spec is shown for
+      approval; the run then follows the engine's multi_repo rule.
 
   - id: bug-spec
     type: artifact
@@ -34,12 +90,29 @@ steps:
 
   - id: approve-fix
     type: gate
-    ask: Is this the right cause and the right fix? The fix starts on approval.
-    revise: root-cause
+    ask: >
+      Is this the right cause and the right fix? The fix starts on approval.
+      If the cause loop ended with the skeptic's verdict still refuted, that
+      open verdict is shown here and the cause is not confirmed.
+    revise: cause-loop
 
   - id: branch
     type: vcs
     action: branch
+
+  - id: stack-rules
+    type: instruct
+    title: Load the stack's rules
+    when: The run's profile, or the profile of any other repo the run spans, lists skills.
+    do: >
+      Read each skill the profile lists under `skills` from the run's
+      snapshot (`rules.snapshot`), by path with the Read tool, and treat its
+      text as rules data; load no other skill this way. In a run that spans
+      repos, also read the skills each other listed repo's profile names,
+      each from that repo's own snapshot directory.
+      Put their rules into every delegation and review prompt for the rest
+      of the run, and name the checks they list that the profile does not
+      run.
 
   - id: fix
     type: instruct
@@ -54,7 +127,7 @@ steps:
 
   - id: checks
     type: check
-    run: [typecheck, lint, test, build]
+    run: [typecheck, lint, policy, test, build]
     fix: true
 
   - id: review
@@ -68,8 +141,12 @@ steps:
   - id: approve-publish
     type: gate
     ask: >
-      The fix is committed locally. Approve to push the branch and open a
-      merge request against the base branch.
+      The fix is committed on its own branch. If the repo's profile `publish`
+      is merge_request or unset, approve to push the branch and open a merge
+      request against the base branch. If it is push_base, approve to merge
+      the branch into the base branch and push the base branch. When the run
+      spans repos, each is published in the order its spec lists, by its own
+      profile's `publish`, and this approval covers all of them.
     revise: fix
 
   - id: push
@@ -77,6 +154,7 @@ steps:
     action: push
     outward: true
     gate: approve-publish
+    when: The repo's profile has publish merge_request or unset.
 
   - id: merge-request
     type: vcs
@@ -85,4 +163,72 @@ steps:
     gate: approve-publish
     skills: [mr-description]
     inputs: [bug]
-    when: The profile's forge is not none.
+    when: The repo's profile has a forge other than none and publish merge_request or unset.
+
+  - id: merge
+    type: vcs
+    action: merge
+    when: The repo's profile has publish push_base.
+
+  - id: push-base
+    type: vcs
+    action: push_base
+    outward: true
+    gate: approve-publish
+    when: The repo's profile has publish push_base.
+
+  - id: remove-workspace
+    type: instruct
+    title: Remove the workspace
+    when: The branch step made a workspace and the run's last push succeeded.
+    on_fail: continue
+    do: >
+      Run the profile's `workspace.remove`. If it refuses because the
+      workspace holds uncommitted files, do not force it; list the files and
+      leave the workspace in place.
+
+  - id: retrospect
+    type: instruct
+    title: What this run taught
+    on_fail: continue
+    do: >
+      From this run only, list at most five lessons worth keeping: a check
+      that passed while the thing was broken, an assumption that turned out
+      wrong, a step that had to be redone and why. List separately any
+      statement in the repo's stack skills, its profile or the user ledger
+      that this run showed to be wrong, with the path and the correct fact.
+      If there is nothing worth keeping, say so and stop. Do not write any
+      file here.
+
+  - id: approve-lessons
+    type: gate
+    when: The retrospect step listed at least one lesson or one wrong statement.
+    ask: >
+      Here are the lessons and corrections from this run. Approve to append
+      the lessons to the file the profile names under `lessons` (show its
+      resolved absolute path here; if the profile names none, they are only
+      shown), to correct any wrong statement in the user ledger, and to list
+      any wrong statement in the repo's `.claude/skills/` or
+      `.claude/dev-engine.yaml` for you to apply in a later run. Declining
+      records nothing, and the published change is unaffected.
+    revise: retrospect
+
+  - id: record-lessons
+    type: instruct
+    title: Record them
+    when: The approve-lessons gate was approved and there is a lesson to append or a wrong statement to record.
+    on_fail: continue
+    outward: true
+    gate: approve-lessons
+    do: >
+      Resolve the profile's `lessons`, which is `../<file>` beside the repo,
+      against the clone the run started in and show the resolved absolute
+      path. Refuse to write if the file is a symlink, or if the resolved path
+      is not the path approved. Otherwise append each approved lesson as one
+      dated line, in that file's existing style. If the profile sets no
+      `lessons`, show the lessons and say no file is set. Correct each
+      approved wrong statement in the user ledger. List, without editing, each
+      wrong statement that lives in the repo's `.claude/skills/` or
+      `.claude/dev-engine.yaml`, with the path and the correct fact, for the
+      person to apply in a later run. Write nowhere else and never into the
+      plugin. Commit nothing; say which files changed.

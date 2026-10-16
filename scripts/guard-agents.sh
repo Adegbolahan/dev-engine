@@ -1,7 +1,19 @@
 #!/usr/bin/env bash
 # PreToolUse hook. Keeps the read-only agents read-only: denies file edits and
 # any Bash command outside the allowlist below when the call comes from one of
-# them. Calls from the main session and from the implementer pass through.
+# them. Keeps every subagent, the implementer above all since it may write, out
+# of ~/.config/dev-engine, the directory holding the trust record, ledger and
+# run snapshots: denies its file edits there, any Bash command that names that
+# directory, and any Bash command that runs config.rb with `trust`, `snapshot`
+# or `snapshot-rm`, the plugin's own way of rewriting trust and snapshots. Calls
+# from the main session (no agent_type) pass through.
+#
+# The Bash checks are best-effort: Bash is unbounded, so a determined command
+# can build a path or a call this does not recognise. The agent prompts are the
+# main control; this hook catches the plain cases. Full checking needs jq.
+# Without it, the hook can only fail closed: it denies any subagent call whose
+# raw input mentions `.config/dev-engine` or `config.rb`, and every call from a
+# read-only agent.
 #
 # Reads the hook JSON on stdin. Prints a deny decision, or nothing to allow.
 
@@ -9,7 +21,7 @@ set -u
 
 # Every agent in agents/ whose tools hold no Edit or Write. validate.rb checks
 # that this list and the agent files agree.
-READ_ONLY_AGENTS="correctness-reviewer security-reviewer test-reviewer maintainability-reviewer doc-reviewer researcher cross-repo-navigator ui-researcher prior-art-researcher ui-reviewer"
+READ_ONLY_AGENTS="correctness-reviewer security-reviewer test-reviewer maintainability-reviewer doc-reviewer researcher cross-repo-navigator ui-researcher prior-art-researcher ui-reviewer skeptic"
 
 input="$(cat)"
 
@@ -24,14 +36,23 @@ deny() {
   exit 0
 }
 
-# Without jq the command cannot be inspected, so fail closed for the read-only
-# agents and leave everything else alone.
+# Without jq the command cannot be inspected, so fail closed: every call from a
+# read-only agent, and any other subagent's call that mentions the protected
+# directory or config.rb. The main session and other calls are left alone.
 if ! command -v jq >/dev/null 2>&1; then
   for a in $READ_ONLY_AGENTS; do
     case "$input" in
       *"\"agent_type\":\"$a\""* | *"\"agent_type\": \"$a\""* | *":$a\""*) deny "jq is missing" ;;
     esac
   done
+  case "$input" in
+    *'"agent_type":""'* | *'"agent_type": ""'*) ;;
+    *'"agent_type":"'* | *'"agent_type": "'*)
+      case "$(printf '%s' "$input" | tr '[:upper:]' '[:lower:]')" in
+        *".config/dev-engine"* | *"config.rb"*) deny "jq is missing" ;;
+      esac
+      ;;
+  esac
   exit 0
 fi
 
@@ -39,13 +60,93 @@ agent="$(printf '%s' "$input" | jq -r '.agent_type // empty')"
 agent="${agent##*:}" # plugin agents arrive as dev-engine:<name>
 [ -z "$agent" ] && exit 0
 
+tool="$(printf '%s' "$input" | jq -r '.tool_name // empty')"
+
+# The directory holding the trust record and the run snapshots.
+PROTECTED="$HOME/.config/dev-engine"
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+# An absolute path with `.` and `..` removed and the symlinks in its existing
+# part resolved, whether or not the file exists. Does not follow a symlinked
+# final component; resolve_path does.
+resolve_once() {
+  local p="$1" cwd="$2" rest="" base part
+  local -a out=()
+  case "$p" in
+    "~") p="$HOME" ;;
+    "~/"*) p="$HOME/${p#\~/}" ;;
+  esac
+  case "$p" in /*) ;; *) p="${cwd:-.}/$p" ;; esac
+  local oldifs="$IFS"
+  IFS=/
+  set -f # a `*` in a path is a name, not a pattern
+  for part in $p; do
+    case "$part" in
+      "" | .) ;;
+      ..) [ "${#out[@]}" -gt 0 ] && unset "out[${#out[@]}-1]" ;;
+      *) out+=("$part") ;;
+    esac
+  done
+  set +f
+  p="/${out[*]-}"
+  IFS="$oldifs"
+  while [ ! -e "$p" ] && [ ! -L "$p" ] && [ "$p" != "/" ]; do
+    rest="/${p##*/}$rest"
+    p="${p%/*}"
+    [ -z "$p" ] && p="/"
+  done
+  if [ -d "$p" ]; then
+    base="$(cd -P "$p" 2>/dev/null && pwd -P)" || base="$p"
+  else
+    base="$(cd -P "$(dirname "$p")" 2>/dev/null && pwd -P)/$(basename "$p")" || base="$p"
+  fi
+  printf '%s%s' "${base%/}" "$rest"
+}
+
+# resolve_once, then follow a symlinked final component (up to 16 links).
+resolve_path() {
+  local p n=0 target
+  p="$(resolve_once "$1" "$2")"
+  while [ -L "$p" ] && [ "$n" -lt 16 ]; do
+    target="$(readlink "$p")" || break
+    case "$target" in /*) ;; *) target="$(dirname "$p")/$target" ;; esac
+    p="$(resolve_once "$target" "")"
+    n=$((n + 1))
+  done
+  printf '%s' "$p"
+}
+
+# Every subagent, not only the implementer, stays out of PROTECTED.
+prot="$(lower "$PROTECTED")"
+prot_real="$(lower "$(resolve_path "$PROTECTED" "")")"
+RE_CONFIG_WRITE="config\\.rb[\"']?[[:space:]]+[\"']?(trust|snapshot|snapshot-rm)([\"'[:space:];|&)]|\$)"
+case "$tool" in
+  Edit | Write | MultiEdit | NotebookEdit)
+    fp="$(printf '%s' "$input" | jq -r '.tool_input.file_path // .tool_input.notebook_path // empty')"
+    cwd="$(printf '%s' "$input" | jq -r '.cwd // empty')"
+    if [ -n "$fp" ]; then
+      res="$(lower "$(resolve_path "$fp" "$cwd")")"
+      for p in "$prot" "$prot_real"; do
+        case "$res" in "$p" | "$p"/*) deny "$agent may not edit $PROTECTED (the directory holding the trust record, ledger and run snapshots)." ;; esac
+      done
+    fi
+    ;;
+  Bash)
+    cmd="$(lower "$(printf '%s' "$input" | jq -r '.tool_input.command // empty')")"
+    case "$cmd" in
+      *".config/dev-engine"*) deny "$agent's commands may not name $PROTECTED (the directory holding the trust record, ledger and run snapshots)." ;;
+    esac
+    if [[ "$cmd" =~ $RE_CONFIG_WRITE ]]; then
+      deny "$agent's commands may not run config.rb trust, snapshot or snapshot-rm; they rewrite the trust record and run snapshots."
+    fi
+    ;;
+esac
+
 read_only=0
 for a in $READ_ONLY_AGENTS; do
   [ "$a" = "$agent" ] && read_only=1
 done
 [ "$read_only" -eq 0 ] && exit 0
-
-tool="$(printf '%s' "$input" | jq -r '.tool_name // empty')"
 
 RE_PLAIN='^(cd|ls|cat|head|tail|wc|pwd|stat|cut|tr|diff|nl|basename|dirname|echo|true|jq)([[:space:]]|$)'
 RE_SEARCH='^(rg|grep)([[:space:]]|$)'

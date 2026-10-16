@@ -53,7 +53,8 @@ ENGINE = YAML.safe_load(File.read(File.join(ROOT, 'engine/engine.yaml')))
 # here before anything below reads them.
 def profile_in(name, dir)
   prof = DevEngineConfig.load(DevEngineConfig.profile_path(dir))
-  problems = DevEngineConfig.profile_errors(prof, ENGINE['commands'] || [], ENGINE['forges'] || [])
+  problems = DevEngineConfig.profile_errors(prof, ENGINE['commands'] || [], ENGINE['forges'] || [],
+                                            ENGINE['publish_modes'] || [], repo: dir)
   return prof if problems.empty?
 
   problems.each { |p| drift("#{name}: #{DevEngineConfig::PROFILE_REL}: #{p}") }

@@ -162,6 +162,183 @@ write_profile build
 expect 'validate with a profile missing a command key' 1 'commands.build is missing' \
   "$repo" ruby "$here/validate.rb"
 
+# The optional fields: `skills` names the repo's own skills, `publish` picks
+# the publish tail, `lessons` is `../<file>` beside the repo.
+mkdir -p "$repo/.claude/skills/demo-stack"
+printf -- '---\nname: demo-stack\ndescription: d\n---\nRules.\n' >"$repo/.claude/skills/demo-stack/SKILL.md"
+write_profile
+printf 'skills: [demo-stack]\npublish: push_base\nlessons: ../LESSONS-LEARNT.md\n' >>"$repo/.claude/dev-engine.yaml"
+expect 'validate accepts skills, publish and lessons' 0 'dev-engine: valid' "$repo" ruby "$here/validate.rb"
+write_profile
+printf 'publish: merge_request\n' >>"$repo/.claude/dev-engine.yaml"
+expect 'validate accepts publish merge_request' 0 'dev-engine: valid' "$repo" ruby "$here/validate.rb"
+write_profile
+printf 'skills: [demo-stack, not-there]\n' >>"$repo/.claude/dev-engine.yaml"
+expect 'validate rejects a skill the repo does not have' 1 \
+  'skills names `not-there`, which has no .claude/skills/not-there/SKILL.md in the repo' "$repo" ruby "$here/validate.rb"
+write_profile
+printf 'skills: demo-stack\n' >>"$repo/.claude/dev-engine.yaml"
+expect 'validate rejects skills that is not a list' 1 '`skills` must be a list of kebab-case skill names' \
+  "$repo" ruby "$here/validate.rb"
+write_profile
+printf 'skills: [Demo_Stack]\n' >>"$repo/.claude/dev-engine.yaml"
+expect 'validate rejects a skill name that is not kebab-case' 1 '`skills` must be a list of kebab-case skill names' \
+  "$repo" ruby "$here/validate.rb"
+write_profile
+printf 'publish: deploy\n' >>"$repo/.claude/dev-engine.yaml"
+expect 'validate rejects an unknown publish value' 1 '`publish` must be one of: merge_request, push_base' \
+  "$repo" ruby "$here/validate.rb"
+lessons_msg='`lessons` must be `../<file>`, a single file beside the repo'
+for bad in '/tmp/lessons.md' '""' 'LESSONS.md' 'docs/LESSONS.md' '.Git/hooks/x' '.git/hooks/post-commit' \
+  '.claude/dev-engine.yaml' '../x/y.md' '../../x' 'a/../../x' '..' '../' 'docs//x' 'a/./x'; do
+  write_profile
+  printf 'lessons: %s\n' "$bad" >>"$repo/.claude/dev-engine.yaml"
+  expect "validate rejects lessons path $bad" 1 "$lessons_msg" "$repo" ruby "$here/validate.rb"
+done
+write_profile
+printf 'lessons: ../.hidden.md\n' >>"$repo/.claude/dev-engine.yaml"
+expect 'validate rejects a hidden lessons file' 1 '`lessons` must not name a hidden file' "$repo" ruby "$here/validate.rb"
+write_profile
+printf 'lessons: ../x.sh\n' >>"$repo/.claude/dev-engine.yaml"
+expect 'validate rejects a lessons file that is not .md or .txt' 1 '`lessons` must end in .md or .txt' \
+  "$repo" ruby "$here/validate.rb"
+for ok in '../LESSONS.txt' '../lessons.MD' '../LESSONS-LEARNT.md'; do
+  write_profile
+  printf 'lessons: %s\n' "$ok" >>"$repo/.claude/dev-engine.yaml"
+  expect "validate accepts lessons path $ok" 0 'dev-engine: valid' "$repo" ruby "$here/validate.rb"
+done
+rm -rf "$repo/.claude/skills"
+write_profile
+
+# Trust covers the skills the profile lists: editing one, or removing it,
+# makes the repo untrusted; a skill the profile does not list changes nothing.
+mkdir -p "$repo/.claude/skills/listed" "$repo/.claude/skills/unlisted"
+printf 'one\n' >"$repo/.claude/skills/listed/SKILL.md"
+printf 'one\n' >"$repo/.claude/skills/unlisted/SKILL.md"
+write_profile
+printf 'skills: [listed]\n' >>"$repo/.claude/dev-engine.yaml"
+ruby "$here/config.rb" trust "$repo" >/dev/null
+expect 'trusted with a listed skill as approved' 0 '' "$repo" ruby "$here/config.rb" trusted "$repo"
+printf 'two\n' >"$repo/.claude/skills/unlisted/SKILL.md"
+expect 'an unlisted skill change keeps trust' 0 '' "$repo" ruby "$here/config.rb" trusted "$repo"
+expect 'hook still works with a listed skill' 0 'this repo matches the `temp-repo` profile' "$repo" bash "$here/session-start.sh"
+printf 'two\n' >"$repo/.claude/skills/listed/SKILL.md"
+expect 'a listed skill change makes the repo untrusted' 1 '' "$repo" ruby "$here/config.rb" trusted "$repo"
+expect 'hook after a listed skill change' 0 'not yet trusted' "$repo" bash "$here/session-start.sh"
+ruby "$here/config.rb" trust "$repo" >/dev/null
+expect 'trusted again after re-approval' 0 '' "$repo" ruby "$here/config.rb" trusted "$repo"
+# snapshot (by run id): refuses an untrusted repo; copies the profile and
+# exactly the listed skills under the profile's name; the copy digests to the
+# trusted value; later edits to the working tree leave it unchanged.
+runs="$HOME/.config/dev-engine/runs"
+rid=20261015-0000-test-snap
+snap="$runs/$rid/temp-repo"
+cfg="$here/config.rb"
+printf 'three\n' >"$repo/.claude/skills/listed/SKILL.md"
+expect 'snapshot refuses an untrusted repo' 1 'not trusted' "$repo" ruby "$cfg" snapshot "$repo" "$rid"
+expect 'a refused snapshot copies nothing' 1 '' "$repo" test -e "$runs/$rid"
+printf 'two\n' >"$repo/.claude/skills/listed/SKILL.md"
+expect 'snapshot of a trusted repo' 0 "snapshot $snap" "$repo" ruby "$cfg" snapshot "$repo" "$rid"
+expect 'snapshot-dir prints the same path' 0 "$snap" "$repo" ruby "$cfg" snapshot-dir "$rid" temp-repo
+expect 'snapshot holds the profile' 0 '' "$repo" cmp "$repo/.claude/dev-engine.yaml" "$snap/.claude/dev-engine.yaml"
+expect 'snapshot holds the listed skill' 0 '' "$repo" cmp "$repo/.claude/skills/listed/SKILL.md" "$snap/.claude/skills/listed/SKILL.md"
+expect 'snapshot leaves out an unlisted skill' 1 '' "$repo" test -e "$snap/.claude/skills/unlisted"
+snap_dg="$(ruby -I"$here" -rconfig -e 'puts DevEngineConfig.profile_digest(ARGV[0])' "$snap/.claude/dev-engine.yaml")"
+count=$((count + 1))
+if [ -z "$snap_dg" ]; then
+  fail=$((fail + 1))
+  printf 'FAIL: the snapshot digest is empty\n'
+fi
+expect 'snapshot digest equals the trusted digest' 0 "$snap_dg" "$repo" cat "$HOME/.config/dev-engine/trusted.yaml"
+printf 'edited\n' >"$repo/.claude/skills/listed/SKILL.md"
+printf '# edit\n' >>"$repo/.claude/dev-engine.yaml"
+expect 'the snapshot skill is unchanged after a tree edit' 0 'two' "$repo" cat "$snap/.claude/skills/listed/SKILL.md"
+expect 'the snapshot profile is unchanged after a tree edit' 1 '' "$repo" grep -F '# edit' "$snap/.claude/dev-engine.yaml"
+
+# A failed snapshot leaves an earlier one in place and no partial copy behind:
+# first because the tree changed after approval (refused as untrusted), then
+# because the copy does not digest to the approved value (trusted? forced true).
+expect 'a snapshot refused after a tree edit' 1 'not trusted' "$repo" ruby "$cfg" snapshot "$repo" "$rid"
+expect 'the earlier snapshot survives a refusal' 0 'two' "$repo" cat "$snap/.claude/skills/listed/SKILL.md"
+expect 'a refusal leaves no partial copy' 0 "temp-repo" "$repo" ls -A "$runs/$rid"
+count=$((count + 1))
+if [ "$(ls -A "$runs/$rid" | wc -l | tr -d ' ')" != 1 ]; then
+  fail=$((fail + 1))
+  printf 'FAIL: a refused snapshot left extra entries: %s\n' "$(ls -A "$runs/$rid")"
+fi
+expect 'a copy that does not digest to the approval is refused' 1 'changed while it was copied' "$repo" \
+  ruby -I"$here" -rconfig -e 'DevEngineConfig.define_singleton_method(:trusted?) { |_| true }
+    begin; DevEngineConfig.snapshot!(ARGV[0], ARGV[1]); rescue TypeError => e; abort "cannot snapshot: #{e.message}"; end' "$repo" "$rid"
+expect 'the earlier snapshot survives a digest mismatch' 0 'two' "$repo" cat "$snap/.claude/skills/listed/SKILL.md"
+count=$((count + 1))
+if [ "$(ls -A "$runs/$rid" | wc -l | tr -d ' ')" != 1 ]; then
+  fail=$((fail + 1))
+  printf 'FAIL: a mismatched snapshot left extra entries: %s\n' "$(ls -A "$runs/$rid")"
+fi
+sed -i.bak '$d' "$repo/.claude/dev-engine.yaml" && rm -f "$repo/.claude/dev-engine.yaml.bak"
+printf 'two\n' >"$repo/.claude/skills/listed/SKILL.md"
+
+# Re-snapshotting a trusted repo replaces the earlier copy.
+expect 'a second snapshot replaces the first' 0 "snapshot $snap" "$repo" ruby "$cfg" snapshot "$repo" "$rid"
+
+# Run ids and names are validated, and nothing leaves the runs directory.
+expect 'snapshot refuses a path as a run id' 1 'is not a run id' "$repo" ruby "$cfg" snapshot "$repo" ../x
+expect 'a refused run id wrote nothing' 1 '' "$repo" test -e "$HOME/.config/dev-engine/x"
+expect 'snapshot-dir refuses a bad run id' 1 'is not a run id' "$repo" ruby "$cfg" snapshot-dir ../x
+expect 'snapshot-dir refuses a bad name' 1 'is not a repo name' "$repo" ruby "$cfg" snapshot-dir "$rid" ../x
+expect 'snapshot-rm refuses a bad run id' 1 'is not a run id' "$repo" ruby "$cfg" snapshot-rm ../..
+expect 'a refused snapshot-rm removes nothing' 0 '' "$repo" test -d "$runs/$rid"
+mkdir -p "$runs/20261015-0001-test-other"
+expect 'snapshot-rm removes the run directory' 0 'removed' "$repo" ruby "$cfg" snapshot-rm "$rid"
+expect 'the removed run directory is gone' 1 '' "$repo" test -e "$runs/$rid"
+expect 'snapshot-rm leaves other runs' 0 '' "$repo" test -d "$runs/20261015-0001-test-other"
+mv "$runs" "$runs.real"
+mkdir -p "$tmp/outside"
+ln -s "$tmp/outside" "$runs"
+expect 'snapshot refuses a runs directory that leaves the config directory' 1 'would leave' "$repo" ruby "$cfg" snapshot "$repo" "$rid"
+expect 'nothing was written outside' 0 '' "$repo" test -z "$(ls -A "$tmp/outside")"
+rm -f "$runs"
+mv "$runs.real" "$runs"
+
+# A profile with no `skills` snapshots to just the profile, at the trusted digest.
+rm -rf "$runs"
+write_profile
+ruby "$cfg" trust "$repo" >/dev/null
+rid2=20261015-0002-test-plain
+snap2="$runs/$rid2/temp-repo"
+expect 'snapshot of a profile without skills' 0 "snapshot $snap2" "$repo" ruby "$cfg" snapshot "$repo" "$rid2"
+expect 'the skill-less snapshot holds the profile' 0 '' "$repo" cmp "$repo/.claude/dev-engine.yaml" "$snap2/.claude/dev-engine.yaml"
+expect 'the skill-less snapshot holds nothing else' 0 '' "$repo" test -z "$(cd "$snap2" && find . -type f ! -path ./.claude/dev-engine.yaml)"
+snap_dg2="$(ruby -I"$here" -rconfig -e 'puts DevEngineConfig.profile_digest(ARGV[0])' "$snap2/.claude/dev-engine.yaml")"
+count=$((count + 1))
+if [ -z "$snap_dg2" ]; then
+  fail=$((fail + 1))
+  printf 'FAIL: the skill-less snapshot digest is empty\n'
+fi
+expect 'the skill-less snapshot digest equals the trusted digest' 0 "$snap_dg2" "$repo" cat "$HOME/.config/dev-engine/trusted.yaml"
+
+# check: a profile-only schema check for repos that validate.rb does not cover.
+expect 'check accepts a good profile' 0 'profile ok' "$repo" ruby "$cfg" check "$repo"
+printf 'publish: deploy\n' >>"$repo/.claude/dev-engine.yaml"
+expect 'check rejects a bad publish' 1 '`publish` must be one of: merge_request, push_base' "$repo" ruby "$cfg" check "$repo"
+write_profile
+printf 'skills: [not-there]\n' >>"$repo/.claude/dev-engine.yaml"
+expect 'check rejects a missing skill' 1 'which has no .claude/skills/not-there/SKILL.md' "$repo" ruby "$cfg" check "$repo"
+write_profile
+expect 'check of a repo without a profile' 1 'no profile at' "$repo" ruby "$cfg" check "$plain"
+
+rm -rf "$runs"
+mkdir -p "$repo/.claude/skills/listed"
+printf 'one\n' >"$repo/.claude/skills/listed/SKILL.md"
+write_profile
+printf 'skills: [listed]\n' >>"$repo/.claude/dev-engine.yaml"
+ruby "$cfg" trust "$repo" >/dev/null
+rm -f "$repo/.claude/skills/listed/SKILL.md"
+expect 'a missing listed skill makes the repo untrusted' 1 '' "$repo" ruby "$here/config.rb" trusted "$repo"
+expect 'trust refuses a profile whose listed skill is missing' 1 'cannot record trust' "$repo" ruby "$here/config.rb" trust "$repo"
+rm -rf "$repo/.claude/skills" "$HOME/.config/dev-engine/trusted.yaml"
+write_profile
+
 # drift with no ledger reports a broken profile, as it does with one.
 printf 'name: [unclosed\n' >"$repo/.claude/dev-engine.yaml"
 expect 'drift with no ledger and a broken profile' 1 'is not valid YAML' "$repo" ruby "$here/drift.rb"

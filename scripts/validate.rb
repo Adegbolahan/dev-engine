@@ -74,6 +74,7 @@ STEP_TYPES = engine['step_types'] || {}
 MODELS = engine['models'] || []
 COMMANDS = engine['commands'] || []
 FORGES = engine['forges'] || []
+PUBLISH_MODES = engine['publish_modes'] || []
 VCS_ACTIONS = engine['vcs_actions'] || {}
 COMMON = engine['common_fields'] || { 'required' => [], 'optional' => [] }
 
@@ -122,7 +123,9 @@ PROFILES = {}
   prof = load_user_file(abs)
   next if ERRORS.size > before
 
-  DevEngineConfig.profile_errors(prof, COMMANDS, FORGES).each { |m| err(shown(abs), m) }
+  # The repo a profile describes holds it at .claude/dev-engine.yaml.
+  repo = File.dirname(File.dirname(abs))
+  DevEngineConfig.profile_errors(prof, COMMANDS, FORGES, PUBLISH_MODES, repo: repo).each { |m| err(shown(abs), m) }
   PROFILES[abs] = prof if prof.is_a?(Hash)
 end
 
@@ -180,7 +183,9 @@ names_in('agents', '*.md').each do |rel|
   end
 end
 
-# --- hooks and the read-only guard ---------------------------------------
+# --- hooks and the agent guard -------------------------------------------
+# guard-agents.sh keeps the read-only agents read-only and keeps the implementer
+# out of ~/.config/dev-engine; its agent list and its tests are checked here.
 
 hooks_rel = 'hooks/hooks.json'
 begin

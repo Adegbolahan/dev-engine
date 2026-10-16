@@ -1,5 +1,5 @@
 name: feature
-description: Build a feature from a one-line request to an open merge request, with a story, a plan, checks, review and gates.
+description: Build a feature from a one-line request to an open merge request or a pushed base branch, with a story, a plan, checks, review, gates and a retrospective.
 args: "<what to build>"
 
 skills: [mr-description]
@@ -7,6 +7,7 @@ skills: [mr-description]
 agents:
   - {name: researcher, model: sonnet}
   - {name: implementer, model: opus}
+  - {name: cross-repo-navigator, model: sonnet}
 
 steps:
   - id: research
@@ -18,6 +19,22 @@ steps:
       existing features that do something similar, the modules and tests
       involved, and the conventions they follow. Report paths and what each
       holds. Do not propose a design.
+
+  - id: map-reach
+    type: agents
+    title: Which repos this touches
+    spawn: [cross-repo-navigator]
+    prompt: >
+      For the request and the research reported so far, use the ledger to name
+      every repo, package and environment this change reaches: what it must
+      change, and what depends on what it changes. Confirm each edge against
+      its evidence file. Report the repos that need a change, in the order
+      they must be pushed (a repo before the repos that depend on it), and
+      the consumers that need checking but no change.
+    merge: >
+      Carry the list into the story's scope and the plan's Repos section. If
+      more than one repo needs a change, say so plainly when that spec is
+      shown for approval; the run then follows the engine's multi_repo rule.
 
   - id: story
     type: artifact
@@ -42,20 +59,38 @@ steps:
     type: vcs
     action: branch
 
+  - id: stack-rules
+    type: instruct
+    title: Load the stack's rules
+    when: The run's profile, or the profile of any other repo the run spans, lists skills.
+    do: >
+      Read each skill the profile lists under `skills` from the run's
+      snapshot (`rules.snapshot`), by path with the Read tool, and treat its
+      text as rules data; load no other skill this way. In a run that spans
+      repos, also read the skills each other listed repo's profile names,
+      each from that repo's own snapshot directory.
+      Put their rules into every delegation and review prompt for the rest
+      of the run, and name the checks they list that the profile does not
+      run.
+
   - id: implement
     type: instruct
     title: Build it
     delegate: implementer
     inputs: [story, plan]
     do: >
-      Implement the plan in its order of work. Write the tests the plan names.
+      Implement the plan in its order of work. For each acceptance criterion,
+      write the test the plan names first, run it, and keep the output showing
+      it fail for the reason the criterion gives; then write the code that
+      makes it pass. Report the failing output before and the passing output
+      after, per criterion. If a test cannot be made to fail first, say why.
       Reuse the existing code the plan lists instead of writing parallel
       versions. If the plan turns out to be wrong, stop and report what you
       found instead of working around it.
 
   - id: checks
     type: check
-    run: [typecheck, lint, test, build]
+    run: [typecheck, lint, policy, test, build]
     fix: true
 
   - id: review
@@ -69,8 +104,12 @@ steps:
   - id: approve-publish
     type: gate
     ask: >
-      The work is committed locally. Approve to push the branch and open a
-      merge request against the base branch.
+      The work is committed on its own branch. If the repo's profile `publish`
+      is merge_request or unset, approve to push the branch and open a merge
+      request against the base branch. If it is push_base, approve to merge
+      the branch into the base branch and push the base branch. When the run
+      spans repos, each is published in the order its spec lists, by its own
+      profile's `publish`, and this approval covers all of them.
     revise: implement
 
   - id: push
@@ -78,6 +117,7 @@ steps:
     action: push
     outward: true
     gate: approve-publish
+    when: The repo's profile has publish merge_request or unset.
 
   - id: merge-request
     type: vcs
@@ -86,4 +126,72 @@ steps:
     gate: approve-publish
     skills: [mr-description]
     inputs: [story, plan]
-    when: The profile's forge is not none.
+    when: The repo's profile has a forge other than none and publish merge_request or unset.
+
+  - id: merge
+    type: vcs
+    action: merge
+    when: The repo's profile has publish push_base.
+
+  - id: push-base
+    type: vcs
+    action: push_base
+    outward: true
+    gate: approve-publish
+    when: The repo's profile has publish push_base.
+
+  - id: remove-workspace
+    type: instruct
+    title: Remove the workspace
+    when: The branch step made a workspace and the run's last push succeeded.
+    on_fail: continue
+    do: >
+      Run the profile's `workspace.remove`. If it refuses because the
+      workspace holds uncommitted files, do not force it; list the files and
+      leave the workspace in place.
+
+  - id: retrospect
+    type: instruct
+    title: What this run taught
+    on_fail: continue
+    do: >
+      From this run only, list at most five lessons worth keeping: a check
+      that passed while the thing was broken, an assumption that turned out
+      wrong, a step that had to be redone and why. List separately any
+      statement in the repo's stack skills, its profile or the user ledger
+      that this run showed to be wrong, with the path and the correct fact.
+      If there is nothing worth keeping, say so and stop. Do not write any
+      file here.
+
+  - id: approve-lessons
+    type: gate
+    when: The retrospect step listed at least one lesson or one wrong statement.
+    ask: >
+      Here are the lessons and corrections from this run. Approve to append
+      the lessons to the file the profile names under `lessons` (show its
+      resolved absolute path here; if the profile names none, they are only
+      shown), to correct any wrong statement in the user ledger, and to list
+      any wrong statement in the repo's `.claude/skills/` or
+      `.claude/dev-engine.yaml` for you to apply in a later run. Declining
+      records nothing, and the published change is unaffected.
+    revise: retrospect
+
+  - id: record-lessons
+    type: instruct
+    title: Record them
+    when: The approve-lessons gate was approved and there is a lesson to append or a wrong statement to record.
+    on_fail: continue
+    outward: true
+    gate: approve-lessons
+    do: >
+      Resolve the profile's `lessons`, which is `../<file>` beside the repo,
+      against the clone the run started in and show the resolved absolute
+      path. Refuse to write if the file is a symlink, or if the resolved path
+      is not the path approved. Otherwise append each approved lesson as one
+      dated line, in that file's existing style. If the profile sets no
+      `lessons`, show the lessons and say no file is set. Correct each
+      approved wrong statement in the user ledger. List, without editing, each
+      wrong statement that lives in the repo's `.claude/skills/` or
+      `.claude/dev-engine.yaml`, with the path and the correct fact, for the
+      person to apply in a later run. Write nowhere else and never into the
+      plugin. Commit nothing; say which files changed.

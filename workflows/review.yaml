@@ -65,7 +65,7 @@ steps:
       - id: recheck-commands
         type: check
         when: The fix step ran.
-        run: [typecheck, lint, test]
+        run: [typecheck, lint, policy, test]
         fix: true
 
   - id: remaining
