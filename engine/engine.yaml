@@ -3,7 +3,13 @@
 # contract.
 version: 1
 
-# Models a workflow may name for an agent.
+# Models a workflow may name for an agent. `sonnet` means the latest Sonnet
+# and is the default for nearly every job. `opus` is kept for the hardest one
+# only: correctness review. `haiku` does code and web research (researcher,
+# prior-art-researcher). A step that sends work to a haiku agent must ask for
+# specific findings, demand that each is traced and cited as path:line or a
+# URL with its line or section; validate.rb rejects one that does not. Fable
+# is never used, so it is not a value here and validate.rb rejects it.
 models: [opus, sonnet, haiku]
 
 # Command keys a profile may define and a `check` step may run.

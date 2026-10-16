@@ -116,27 +116,27 @@ ruby /path/to/dev-engine/scripts/validate.rb
 
 ## What is in here
 
-| Path                           | Holds                                                                                                         |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------------- |
-| `commands/dev.md`              | The `/dev` command: reads the engine, a profile and a workflow, then walks the steps.                         |
-| `engine/engine.yaml`           | The eight step types and the rules, statuses and failure behaviour every run obeys.                           |
-| `engine/templates/`            | Story, plan, bug spec and design brief formats, each with a line limit.                                       |
-| `workflows/`                   | `feature`, `bugfix`, `review`, `docs`, `ui-design`.                                                           |
-| `agents/`                      | Eleven read-only agents and one writer.                                                                       |
-| `skills/`                      | `effective-documentation`, `mr-description`, `repo-claude-md`, `ui-ux-design`.                                |
-| `hooks/hooks.json`             | Wires the three hooks below into Claude Code.                                                                 |
-| `scripts/guard-agents.sh`      | The read-only guard: denies edits and non-allowlisted commands for read-only agents.                          |
-| `scripts/guard-agents.test.sh` | The guard's tests; the validator runs them.                                                                   |
-| `scripts/guard-gates.sh`       | The gate guard: denies pushes and merge requests while a run's gate is unapproved.                            |
-| `scripts/guard-gates.test.sh`  | The gate guard's tests; the validator runs them.                                                              |
-| `scripts/session-start.sh`     | The start-of-session note in repos that have a profile.                                                       |
+| Path                           | Holds                                                                                                                                          |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `commands/dev.md`              | The `/dev` command: reads the engine, a profile and a workflow, then walks the steps.                                                          |
+| `engine/engine.yaml`           | The eight step types and the rules, statuses and failure behaviour every run obeys.                                                            |
+| `engine/templates/`            | Story, plan, bug spec and design brief formats, each with a line limit.                                                                        |
+| `workflows/`                   | `feature`, `bugfix`, `review`, `docs`, `ui-design`.                                                                                            |
+| `agents/`                      | Eleven read-only agents and one writer.                                                                                                        |
+| `skills/`                      | `effective-documentation`, `mr-description`, `repo-claude-md`, `ui-ux-design`.                                                                 |
+| `hooks/hooks.json`             | Wires the three hooks below into Claude Code.                                                                                                  |
+| `scripts/guard-agents.sh`      | The read-only guard: denies edits and non-allowlisted commands for read-only agents.                                                           |
+| `scripts/guard-agents.test.sh` | The guard's tests; the validator runs them.                                                                                                    |
+| `scripts/guard-gates.sh`       | The gate guard: denies pushes and merge requests while a run's gate is unapproved.                                                             |
+| `scripts/guard-gates.test.sh`  | The gate guard's tests; the validator runs them.                                                                                               |
+| `scripts/session-start.sh`     | The start-of-session note in repos that have a profile.                                                                                        |
 | `scripts/config.rb`            | Where a repo's profile, the user ledger and the trust record live; schema checks; `trust`/`trusted`/`check`/`snapshot`/`snapshot-rm` commands. |
-| `scripts/config.test.sh`       | Tests the session note, trust, the validator and drift against temp repos and ledgers.                        |
-| `scripts/validate.rb`          | Checks schema, references, hook tests and docs as one system, plus the current repo's profile and the ledger. |
-| `scripts/doctor.sh`            | Checks a machine's prerequisites and says where the ledger is.                                                |
-| `scripts/drift.rb`             | Compares the ledger, each repo's profile and cited paths with the repos on this machine.                      |
-| `.claude/dev-engine.yaml`      | This repo's own profile, so the engine can run its workflows on itself.                                       |
-| `LICENSE`                      | MIT.                                                                                                          |
+| `scripts/config.test.sh`       | Tests the session note, trust, the validator and drift against temp repos and ledgers.                                                         |
+| `scripts/validate.rb`          | Checks schema, references, hook tests and docs as one system, plus the current repo's profile and the ledger.                                  |
+| `scripts/doctor.sh`            | Checks a machine's prerequisites and says where the ledger is.                                                                                 |
+| `scripts/drift.rb`             | Compares the ledger, each repo's profile and cited paths with the repos on this machine.                                                       |
+| `.claude/dev-engine.yaml`      | This repo's own profile, so the engine can run its workflows on itself.                                                                        |
+| `LICENSE`                      | MIT.                                                                                                                                           |
 
 ## Agents
 
@@ -159,6 +159,14 @@ Read-only is enforced twice: the agents' tool lists hold no write tools, and
 the `PreToolUse` hook denies edits and any Bash command outside the allowlist
 in `scripts/guard-agents.sh`. The same hook keeps the implementer out of
 `~/.config/dev-engine`.
+
+Models: every agent runs on the latest Sonnet except `correctness-reviewer`,
+which uses Opus as the hardest job, and `researcher` and
+`prior-art-researcher`, which use Haiku. A step that sends work to a Haiku
+agent must ask for specific findings and demand that each is traced and cited
+as `path:line` or a URL with its line or section; `validate.rb` rejects one
+that does not. All research agents cite every claim that way. Fable is never
+used; `validate.rb` accepts only `opus`, `sonnet` and `haiku`.
 
 ## Limits
 

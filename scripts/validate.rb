@@ -256,6 +256,19 @@ names_in('workflows', '*.yaml').each do |rel|
 end
 err('workflows', 'no workflows found') if WORKFLOWS.empty?
 
+# A step that sends work to a haiku agent must ask for specific findings and
+# demand that each one is traced and cited: the smaller model is used for
+# research only on those terms (engine.yaml `models`).
+def check_cited_task(at, agents, text, ctx)
+  haiku = agents.select { |a| ctx[:models][a] == 'haiku' }
+  return if haiku.empty?
+
+  text = text.to_s
+  return if text.include?('path:line') && text =~ /\btrace/i && text.include?('URL')
+
+  err(at, "sends work to #{haiku.join(', ')} (haiku), so its text must demand findings cited as path:line or a URL with its line, and traced (say `trace`)")
+end
+
 def check_steps(rel, steps, ctx)
   unless steps.is_a?(Array) && !steps.empty?
     err(rel, '`steps` must be a non-empty list')
@@ -298,6 +311,7 @@ def check_steps(rel, steps, ctx)
       if step['delegate']
         err(at, "delegates to `#{step['delegate']}`, which the workflow does not declare") unless ctx[:agents].include?(step['delegate'])
         ctx[:used_agents] << step['delegate']
+        check_cited_task(at, [step['delegate']], step['do'], ctx)
       end
     when 'agents'
       spawn = Array(step['spawn'])
@@ -307,6 +321,7 @@ def check_steps(rel, steps, ctx)
         err(at, "spawns `#{a}`, which can write; an agents step is for read-only agents") if AGENTS[a] && !AGENTS[a][:read_only]
         ctx[:used_agents] << a
       end
+      check_cited_task(at, spawn, step['prompt'], ctx)
     when 'check'
       keys = Array(step['run'])
       err(at, '`run` must list at least one command key') if keys.empty?
@@ -362,6 +377,7 @@ WORKFLOWS.each do |name, (rel, wf)|
   declared_skills.each { |s| err(rel, "declares skill `#{s}`, which is not in skills/") unless SKILLS.include?(s) }
 
   declared_agents = []
+  models = {}
   Array(wf['agents']).each do |a|
     unless a.is_a?(Hash) && a['name']
       err(rel, 'each entry under `agents` needs `name` and `model`')
@@ -371,10 +387,11 @@ WORKFLOWS.each do |name, (rel, wf)|
     err(rel, "agent `#{a['name']}` needs a `model` from: #{MODELS.join(', ')}") unless MODELS.include?(a['model'])
     err(rel, "declares agent `#{a['name']}` twice") if declared_agents.include?(a['name'])
     declared_agents << a['name']
+    models[a['name']] = a['model']
   end
 
   ctx = { ids: Set.new, gates: [], revise: [], calls: [],
-          skills: declared_skills, agents: declared_agents,
+          skills: declared_skills, agents: declared_agents, models: models,
           used_skills: Set.new, used_agents: Set.new }
   check_steps(rel, wf['steps'], ctx)
 

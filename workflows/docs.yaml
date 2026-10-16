@@ -5,7 +5,7 @@ args: "<what to document, or which doc to update>"
 skills: [effective-documentation, repo-claude-md, mr-description]
 
 agents:
-  - {name: researcher, model: sonnet}
+  - {name: researcher, model: haiku}
   - {name: doc-reviewer, model: sonnet}
 
 steps:
@@ -14,10 +14,15 @@ steps:
     title: Read the source the doc will describe
     delegate: researcher
     do: >
-      For the documentation requested, find the source files it must be true
-      to, any existing docs that cover the same ground, and where docs of this
-      kind live in the repo. Report paths, what each establishes, and where
-      existing docs disagree with the source.
+      For the documentation requested, report four lists: (1) each fact the
+      doc must state, cited to the source that establishes it as path:line or
+      path:start-end; (2) existing docs that cover the same ground, as
+      path:line; (3) where docs of this kind live in the repo, with an
+      example path; (4) each place an existing doc disagrees with the source,
+      citing both sides as path:line. Trace a fact through the code when one
+      line does not establish it, each step as path:line. Cite anything
+      outside the repo as a URL with its line or section. Leave out what you
+      cannot cite, or mark it unconfirmed.
 
   - id: approve-scope
     type: gate

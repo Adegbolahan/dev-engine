@@ -5,8 +5,8 @@ args: "<what to build>"
 skills: [mr-description]
 
 agents:
-  - {name: researcher, model: sonnet}
-  - {name: implementer, model: opus}
+  - {name: researcher, model: haiku}
+  - {name: implementer, model: sonnet}
   - {name: cross-repo-navigator, model: sonnet}
 
 steps:
@@ -15,10 +15,15 @@ steps:
     title: Find what already exists
     delegate: researcher
     do: >
-      For the request given, find the code this feature would touch or reuse:
-      existing features that do something similar, the modules and tests
-      involved, and the conventions they follow. Report paths and what each
-      holds. Do not propose a design.
+      For the request given, report four lists: (1) existing features that
+      do something similar; (2) the modules, functions and data this feature
+      would touch or reuse; (3) the tests that cover them; (4) the
+      conventions they follow (layout, naming, errors, test style). Cite
+      every finding as path:line or path:start-end with one line on what is
+      there, or a URL with its line or section for anything outside the
+      repo. Where behaviour spans calls, trace it from the entry point frame
+      by frame, each frame as path:line. Leave out what you cannot cite, or
+      mark it unconfirmed. Do not propose a design.
 
   - id: map-reach
     type: agents

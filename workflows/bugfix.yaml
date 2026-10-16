@@ -5,8 +5,8 @@ args: "<the bug: what happens and how to see it>"
 skills: [mr-description]
 
 agents:
-  - {name: researcher, model: sonnet}
-  - {name: implementer, model: opus}
+  - {name: researcher, model: haiku}
+  - {name: implementer, model: sonnet}
   - {name: cross-repo-navigator, model: sonnet}
   - {name: skeptic, model: sonnet}
 
@@ -37,10 +37,14 @@ steps:
         delegate: researcher
         do: >
           Given the reproduction steps and output, find why the bug happens.
-          Trace from the symptom to the line that causes it and confirm by
-          reading the code path end to end. List other callers that reach the
-          same cause. Report the cause as path:line with the reasoning. Do not
-          propose code. On a later pass, start from what the skeptic found
+          Trace from the symptom (the failing assertion, error or wrong
+          output) back to the line that causes it, frame by frame, listing
+          each frame as path:line with what it does, and confirm by reading
+          the code path end to end. Report the cause as path:line with the
+          reasoning, and every other caller that reaches the same cause as
+          path:line. Cite anything outside the repo as a URL with its line or
+          section. Leave out what you cannot cite, or mark it unconfirmed. Do
+          not propose code. On a later pass, start from what the skeptic found
           against the previous cause.
 
       - id: refute-cause
