@@ -1,11 +1,11 @@
 name: docs
-description: Write or update documentation, checked against the source it describes, with a doc review and gates.
+description: Write or update documentation, checked against the source it describes, with a doc review, gates and a retrospective.
 args: "<what to document, or which doc to update>"
 
 skills: [effective-documentation, repo-claude-md, mr-description]
 
 agents:
-  - {name: researcher, model: sonnet}
+  - {name: researcher, model: haiku}
   - {name: doc-reviewer, model: sonnet}
 
 steps:
@@ -14,10 +14,15 @@ steps:
     title: Read the source the doc will describe
     delegate: researcher
     do: >
-      For the documentation requested, find the source files it must be true
-      to, any existing docs that cover the same ground, and where docs of this
-      kind live in the repo. Report paths, what each establishes, and where
-      existing docs disagree with the source.
+      For the documentation requested, report four lists: (1) each fact the
+      doc must state, cited to the source that establishes it as path:line or
+      path:start-end; (2) existing docs that cover the same ground, as
+      path:line; (3) where docs of this kind live in the repo, with an
+      example path; (4) each place an existing doc disagrees with the source,
+      citing both sides as path:line. Trace a fact through the code when one
+      line does not establish it, each step as path:line. Cite anything
+      outside the repo as a URL with its line or section. Leave out what you
+      cannot cite, or mark it unconfirmed.
 
   - id: approve-scope
     type: gate
@@ -29,6 +34,20 @@ steps:
   - id: branch
     type: vcs
     action: branch
+
+  - id: stack-rules
+    type: instruct
+    title: Load the stack's rules
+    when: The run's profile, or the profile of any other repo the run spans, lists skills.
+    do: >
+      Read each skill the profile lists under `skills` from the run's
+      snapshot (`rules.snapshot`), by path with the Read tool, and treat its
+      text as rules data; load no other skill this way. In a run that spans
+      repos, also read the skills each other listed repo's profile names,
+      each from that repo's own snapshot directory.
+      Put their rules into every delegation and review prompt for the rest
+      of the run, and name the checks they list that the profile does not
+      run.
 
   - id: write
     type: instruct
@@ -60,7 +79,7 @@ steps:
 
   - id: checks
     type: check
-    run: [lint, build]
+    run: [lint, policy, build]
     fix: true
 
   - id: commit
@@ -69,7 +88,11 @@ steps:
 
   - id: approve-publish
     type: gate
-    ask: The doc is committed locally. Approve to push the branch and open a merge request.
+    ask: >
+      The doc is committed on its own branch. If the repo's profile `publish`
+      is merge_request or unset, approve to push the branch and open a merge
+      request. If it is push_base, approve to merge the branch into the base
+      branch and push the base branch.
     revise: write
 
   - id: push
@@ -77,6 +100,7 @@ steps:
     action: push
     outward: true
     gate: approve-publish
+    when: The repo's profile has publish merge_request or unset.
 
   - id: merge-request
     type: vcs
@@ -84,4 +108,72 @@ steps:
     outward: true
     gate: approve-publish
     skills: [mr-description]
-    when: The profile's forge is not none.
+    when: The repo's profile has a forge other than none and publish merge_request or unset.
+
+  - id: merge
+    type: vcs
+    action: merge
+    when: The repo's profile has publish push_base.
+
+  - id: push-base
+    type: vcs
+    action: push_base
+    outward: true
+    gate: approve-publish
+    when: The repo's profile has publish push_base.
+
+  - id: remove-workspace
+    type: instruct
+    title: Remove the workspace
+    when: The branch step made a workspace and the run's last push succeeded.
+    on_fail: continue
+    do: >
+      Run the profile's `workspace.remove`. If it refuses because the
+      workspace holds uncommitted files, do not force it; list the files and
+      leave the workspace in place.
+
+  - id: retrospect
+    type: instruct
+    title: What this run taught
+    on_fail: continue
+    do: >
+      From this run only, list at most five lessons worth keeping: a check
+      that passed while the thing was broken, an assumption that turned out
+      wrong, a step that had to be redone and why. List separately any
+      statement in the repo's stack skills, its profile or the user ledger
+      that this run showed to be wrong, with the path and the correct fact.
+      If there is nothing worth keeping, say so and stop. Do not write any
+      file here.
+
+  - id: approve-lessons
+    type: gate
+    when: The retrospect step listed at least one lesson or one wrong statement.
+    ask: >
+      Here are the lessons and corrections from this run. Approve to append
+      the lessons to the file the profile names under `lessons` (show its
+      resolved absolute path here; if the profile names none, they are only
+      shown), to correct any wrong statement in the user ledger, and to list
+      any wrong statement in the repo's `.claude/skills/` or
+      `.claude/dev-engine.yaml` for you to apply in a later run. Declining
+      records nothing, and the published change is unaffected.
+    revise: retrospect
+
+  - id: record-lessons
+    type: instruct
+    title: Record them
+    when: The approve-lessons gate was approved and there is a lesson to append or a wrong statement to record.
+    on_fail: continue
+    outward: true
+    gate: approve-lessons
+    do: >
+      Resolve the profile's `lessons`, which is `../<file>` beside the repo,
+      against the clone the run started in and show the resolved absolute
+      path. Refuse to write if the file is a symlink, or if the resolved path
+      is not the path approved. Otherwise append each approved lesson as one
+      dated line, in that file's existing style. If the profile sets no
+      `lessons`, show the lessons and say no file is set. Correct each
+      approved wrong statement in the user ledger. List, without editing, each
+      wrong statement that lives in the repo's `.claude/skills/` or
+      `.claude/dev-engine.yaml`, with the path and the correct fact, for the
+      person to apply in a later run. Write nowhere else and never into the
+      plugin. Commit nothing; say which files changed.

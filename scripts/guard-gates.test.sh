@@ -84,6 +84,30 @@ expect deny "$repo" Bash "git push origin main"
 set_run feature running "gates: {approve-story: {answer: approve}, approve-plan: {answer: approve}}"
 expect deny "$repo" Bash "git push origin main"
 
+# Pushing the base branch (publish: push_base) waits on approve-publish too,
+# and no other gate opens it.
+set_run feature running ""
+expect deny "$repo" Bash "git push origin main"
+set_run feature running "gates: {approve-lessons: {answer: approve}}"
+expect deny "$repo" Bash "git push origin main"
+set_run feature running "gates: {approve-publish: {answer: approve}}"
+expect allow "$repo" Bash "git push origin main"
+
+# A workflow whose only push is a push_base step is gated by that step's gate.
+plugin="$tmp/plugin"
+mkdir -p "$plugin/scripts" "$plugin/workflows" "$plugin/.claude-plugin"
+cp "$guard" "$plugin/scripts/"
+cp "$here/../.claude-plugin/plugin.json" "$plugin/.claude-plugin/"
+printf 'name: base-only\nsteps:\n  - {id: approve-publish, type: gate, ask: ok}\n  - {id: merge, type: vcs, action: merge}\n  - {id: push-base, type: vcs, action: push_base, outward: true, gate: approve-publish}\n' \
+  >"$plugin/workflows/base-only.yaml"
+guard="$plugin/scripts/guard-gates.sh"
+set_run base-only running ""
+expect deny "$repo" Bash "git push origin main"
+expect deny "$repo" Bash "gh pr create --fill"
+set_run base-only running "gates: {approve-publish: {answer: approve}}"
+expect allow "$repo" Bash "git push origin main"
+guard="$here/guard-gates.sh"
+
 # A workflow with no push step cannot push while its run is unfinished.
 set_run review running ""
 expect deny "$repo" Bash "git push"

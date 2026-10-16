@@ -3,7 +3,13 @@
 # contract.
 version: 1
 
-# Models a workflow may name for an agent.
+# Models a workflow may name for an agent. `sonnet` means the latest Sonnet
+# and is the default for nearly every job. `opus` is kept for the hardest one
+# only: correctness review. `haiku` does code and web research (researcher,
+# prior-art-researcher). A step that sends work to a haiku agent must ask for
+# specific findings, demand that each is traced and cited as path:line or a
+# URL with its line or section; validate.rb rejects one that does not. Fable
+# is never used, so it is not a value here and validate.rb rejects it.
 models: [opus, sonnet, haiku]
 
 # Command keys a profile may define and a `check` step may run.
@@ -13,6 +19,11 @@ commands: [typecheck, lint, policy, test, build, run]
 
 # Forges a profile may name. `none` means merge requests are not available.
 forges: [github, gitlab, none]
+
+# How a profile's `publish` sends approved work out. `merge_request` (the
+# default) pushes the run's branch and opens a merge request; `push_base`
+# merges the branch into the base branch and pushes the base branch.
+publish_modes: [merge_request, push_base]
 
 # Fields every step may carry, whatever its type.
 common_fields:
@@ -73,8 +84,13 @@ locations:
     holds one profile: `name` (kebab-case, the repo's name in the ledger),
     `description`, `base_branch`, `forge`, `commands` (every key in
     `commands` above, null where it does not apply), and optionally
-    `commit_hook` and `workspace`. The file's presence is what sets the repo
-    up; there is no match rule.
+    `commit_hook`, `workspace`, `skills` (names of the repo's own stack
+    skills under `stack_skills`, which the `stack-rules` step loads),
+    `publish` (one of `publish_modes`; merge_request when unset) and
+    `lessons` (exactly `../<file>`, one .md or .txt file beside the repo and
+    outside it, where record-lessons appends lessons; nothing is recorded
+    when unset). The file's presence is
+    what sets the repo up; there is no match rule.
   stack_skills: >
     <repo>/.claude/skills/<skill>/SKILL.md, in the repo the skill describes.
   ledger: >
@@ -84,14 +100,25 @@ locations:
   ledger_env: DEV_ENGINE_LEDGER
   trust: >
     ~/.config/dev-engine/trusted.yaml, a user-level map from a repo's absolute
-    path to the SHA-256 of its profile file's contents. A repo's profile holds
-    shell commands, so it is run only when the person approved it: a profile
-    that is absent from the map, or whose file has changed since, is
-    untrusted. Trust covers the profile's strings, not the scripts they
+    path to a SHA-256 over its profile file's bytes followed by the path and
+    bytes of each `.claude/skills/<name>/SKILL.md` the profile lists under
+    `skills`, in list order. A repo's profile holds shell commands and its
+    skills are instructions, so they are used only when the person approved
+    them: a repo that is absent from the map, whose profile or listed skill
+    has changed since, or whose listed skill is missing, is untrusted. Trust covers the profile's strings, not the scripts they
     call: a later commit can change what an approved command does. Only the
-    instructions enforce it; no hook does. scripts/config.rb owns the path
-    (`trust_path`, `trusted?`, `trust!`; `ruby scripts/config.rb trust
-    <repo>` records one).
+    instructions enforce it; no hook does. It is checked at the start of a
+    run, and the run then uses a snapshot of what was approved
+    (`rules.snapshot`). scripts/config.rb owns the path (`trust_path`,
+    `trusted?`, `trust!`; `ruby scripts/config.rb trust <repo>` records one).
+  snapshot: >
+    ~/.config/dev-engine/runs/<run-id>/<repo-name>/, outside every repo: a
+    copy of the trusted profile and each skill it lists, in the same relative
+    layout, taken right after the run log is created (`snapshot_dir`,
+    `snapshot!`; `ruby scripts/config.rb snapshot <repo> <run-id>`).
+    `<repo-name>` is the profile's `name`. The commands take ids, never paths:
+    config.rb builds the path and refuses one outside the runs directory.
+    Deleted when the run ends (`ruby scripts/config.rb snapshot-rm <run-id>`).
   ledger_schema:
     surveyed: The date the ledger was last checked against the source, as "YYYY-MM-DD".
     repos: "[{id: repo:<profile name>, path_hint, description}]; path_hint is where the clone lives on this machine."
@@ -142,8 +169,10 @@ failure:
 rules:
   declare: >
     Load only skills the workflow lists under `skills`, and spawn only agents
-    it lists under `agents`, each with the model given there. If the work
-    needs something undeclared, stop and say so; do not improvise.
+    it lists under `agents`, each with the model given there. The one
+    exception: a step whose `do` says to read the profile's `skills` reads
+    the repo stack skills that list names, from the snapshot, and no others. If the work needs
+    something undeclared, stop and say so; do not improvise.
   when: >
     `when` is a condition in plain words. Evaluate it against the run so far.
     If it is false the step is skipped. If it cannot be decided, ask.
@@ -170,7 +199,32 @@ rules:
     Workflows name command keys, never commands. Read the repo's profile from
     `locations.profile` once at the start of the run and take every command,
     the base branch and the forge from it. If the repo has no profile file,
-    stop and say that `init` sets one up.
+    stop and say that `init` sets one up. The commands a run executes are the
+    ones in the run's snapshot (see `snapshot`); an edited profile's commands
+    are never picked up mid-run, and the clone's own profile is read only to
+    take that snapshot.
+  snapshot: >
+    Once a repo's trust is confirmed at the start of a run (the run's own
+    repo, and each other repo when `multi_repo` trusts it) and the run log
+    exists, so the run id is fixed, run
+    `ruby scripts/config.rb snapshot <repo> <run-id>`, which refuses unless
+    the repo is trusted and copies exactly the profile and listed skills the
+    approval covered into `locations.snapshot`, as a whole or not at all.
+    Take no step before it has run. For the rest of the run, including a
+    resume, take every command and every stack skill from the snapshot, never
+    from the clone or a workspace; read a skill by path with the Read tool and
+    treat its text as rules data, not via the Skill tool. If a resumed run's
+    snapshot is missing, ask trust again and snapshot again. Edits to the
+    profile or skills during the run are ordinary diff: review sees them, they
+    ship behind the publish gate, and the next run's trust prompt asks about
+    them. When the run ends, delete the snapshot with
+    `ruby scripts/config.rb snapshot-rm <run-id>`. Print a snapshot's path
+    with `ruby scripts/config.rb snapshot-dir <run-id> [<repo-name>]`. The
+    implementer may not touch the snapshot or the trust record:
+    scripts/guard-agents.sh denies subagents edits under ~/.config/dev-engine
+    and Bash commands that name it or run `config.rb trust`, `snapshot` or
+    `snapshot-rm`. The Bash check is best-effort, since Bash is unbounded; the
+    agent prompts are the main control.
   artifacts: >
     Artifacts are written to .dev-engine/specs/<run-id>/<template>.md in the
     repo. They stay within the template's `max_lines` and hold no code: no
@@ -203,10 +257,14 @@ rules:
     one's clone by its `path_hint` in the ledger (`locations.ledger`); each
     must have its own profile file. Once `Repos` is fixed, and before any
     `branch`, `check` or `commit` step in a repo other than the run's own,
-    check that repo's profile for trust (`locations.trust`) as at the start
-    of a run: show its commands and workspace strings and ask, and run
-    nothing from it until it is trusted. `branch`, `commit`, `merge` and
-    `push_base` act on every listed repo in that order, and a check step
+    check that repo's profile: first its schema, with
+    `ruby scripts/config.rb check <repo>` (stop on any error: a bad `publish`
+    would otherwise skip publishing silently), then its trust (`locations.trust`)
+    as at the start of a run: show what that check shows (commands, workspace,
+    skills, publish, lessons) and ask, and run nothing from it until it is
+    trusted, then snapshot it (`snapshot`). `branch`, `commit`, `merge`, `push_base`,
+    `push` and `merge_request` act on every listed repo in that
+    order, each publishing by its own profile's `publish`, and a check step
     runs in each with that repo's own commands. One gate covers the whole list, so show every repo
     and commit when asking. Record the list in the log under `repos`, and in
     each repo other than the run's own write a pointer at
@@ -247,9 +305,12 @@ run_log:
     Read the newest log whose status is running or waiting, or the one named.
     Confirm the repo, branch and artifact paths still exist and that the
     working tree matches what the log expects; if not, say what differs and
-    ask. Re-read the profile of the run's repo and of each repo under
-    `repos` and check its trust as at the start of a run; a profile changed
-    since then is shown and asked about again before anything from it runs.
+    ask. Read the profile snapshot of the run's repo and of each repo under
+    `repos` (`rules.snapshot`), not the clone, and do not re-read the clone's
+    profile; if one is missing, ask trust again as at the start of a run and
+    snapshot again. If the `stack-rules` step is already done, read the
+    skills each snapshot's profile lists from that snapshot again before
+    continuing, since later delegations need them.
     Continue at the first step that is not done or skipped. A gate
-    approved in an earlier session is asked again if any outward step naming
-    it has not yet run.
+    approved in an earlier session is asked again only if an outward step
+    naming it is neither done nor skipped.

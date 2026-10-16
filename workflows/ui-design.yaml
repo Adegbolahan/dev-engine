@@ -6,9 +6,9 @@ skills: [ui-ux-design, mr-description]
 
 agents:
   - {name: ui-researcher, model: sonnet}
-  - {name: prior-art-researcher, model: sonnet}
-  - {name: ui-reviewer, model: opus}
-  - {name: implementer, model: opus}
+  - {name: prior-art-researcher, model: haiku}
+  - {name: ui-reviewer, model: sonnet}
+  - {name: implementer, model: sonnet}
 
 steps:
   - id: research
@@ -21,8 +21,11 @@ steps:
       discovery questions in Part 1 of that skill from your agent's lens:
       ui-researcher from the app's code, prior-art-researcher from the apps
       the request names and comparable apps on the web. Every answer carries
-      its source and confidence, or says unknown. Report in your agent's
-      format.
+      its confidence and its citation, or says unknown: path:line or
+      path:start-end for code (trace each existing UI element to the
+      component file and line that renders it); a URL with its line number,
+      or its section heading and a quoted passage, for anything on the web.
+      Drop any answer you cannot cite. Report in your agent's format.
     merge: >
       Combine both reports into one table keyed by discovery question,
       giving the answer, its source (path:line or URL) and its confidence.
@@ -96,7 +99,7 @@ steps:
   - id: checks
     type: check
     when: The build step ran.
-    run: [typecheck, lint, test, build]
+    run: [typecheck, lint, policy, test, build]
     fix: true
 
   - id: ui-loop
@@ -140,7 +143,7 @@ steps:
       - id: ui-recheck-commands
         type: check
         when: The fix step ran and the brief's Output is working code.
-        run: [typecheck, lint, test]
+        run: [typecheck, lint, policy, test]
         fix: true
 
   - id: ui-remaining
@@ -167,8 +170,11 @@ steps:
     type: gate
     when: The brief's Output is working code.
     ask: >
-      The design is built, reviewed and committed locally. Approve to push
-      the branch and open a merge request against the base branch.
+      The design is built, reviewed and committed on its own branch. If the
+      profile's `publish` is merge_request or unset, approve to push the
+      branch and open a merge request against the base branch. If it is
+      push_base, approve to merge the branch into the base branch and push
+      the base branch.
     revise: build
 
   - id: push
@@ -176,7 +182,7 @@ steps:
     action: push
     outward: true
     gate: approve-publish
-    when: The brief's Output is working code.
+    when: The brief's Output is working code and the profile's publish is merge_request or unset.
 
   - id: merge-request
     type: vcs
@@ -185,7 +191,19 @@ steps:
     gate: approve-publish
     skills: [mr-description]
     inputs: [design-brief]
-    when: The brief's Output is working code and the profile's forge is not none.
+    when: The brief's Output is working code, the profile's forge is not none and its publish is merge_request or unset.
+
+  - id: merge
+    type: vcs
+    action: merge
+    when: The brief's Output is working code and the profile's publish is push_base.
+
+  - id: push-base
+    type: vcs
+    action: push_base
+    outward: true
+    gate: approve-publish
+    when: The brief's Output is working code and the profile's publish is push_base.
 
   - id: report
     type: instruct
@@ -193,6 +211,16 @@ steps:
     do: >
       Summarise the run. Give the brief's path and the answers that were
       assumed. Give where the deliverable is: the branch and merge request,
-      or the mock, wireframe or recommendations file. Say how many UI review
-      passes ran, what was found and fixed, and what was accepted as it is.
-      Cite files as path:line.
+      the pushed base branch, or the mock, wireframe or recommendations
+      file. Say how many UI review passes ran, what was found and fixed, and
+      what was accepted as it is. Cite files as path:line.
+
+  - id: remove-workspace
+    type: instruct
+    title: Remove the workspace
+    when: The branch step made a workspace and the run's last push succeeded.
+    on_fail: continue
+    do: >
+      Run the profile's `workspace.remove`. If it refuses because the
+      workspace holds uncommitted files, do not force it; list the files and
+      leave the workspace in place.
